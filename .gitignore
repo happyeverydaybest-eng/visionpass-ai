@@ -1,0 +1,62 @@
+# ============================================
+# VisionPass AI门禁系统 — .gitignore
+# ============================================
+
+# --- 内核模块编译产物 ---
+*.ko
+*.o
+*.mod.c
+*.mod.o
+*.o.cmd
+*.ko.cmd
+modules.order
+Module.symvers
+.tmp_versions/
+
+# --- 测试程序编译产物 ---
+*.test
+rc522_test
+servo_test
+ir_sensor_test
+
+# --- 编辑器/IDE ---
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# --- 构建产物（Qt build目录） ---
+build-*
+*.pro.user
+*.pro.user.*
+moc_*.cpp
+moc_*.o
+ui_*.h
+qrc_*.cpp
+qrc_*.o
+
+# --- 日志文件 ---
+*.log
+*.tmp
+
+# --- 部署相关 ---
+deploy/
+*.tar.gz
+*.tar.bz2
+
+# --- 系统文件 ---
+.DS_Store
+Thumbs.db
+
+# ============================================
+# 以下目录是原版参考代码（已有自己的git仓库）
+# 不纳入本项目版本控制
+# ============================================
+VisionPass/
+VisionPass-fork/
+
+# ============================================
+# Claude配置（可选，根据需要决定是否跟踪）
+# ============================================
+# .claude/settings.local.json  # 本地配置，通常不跟踪

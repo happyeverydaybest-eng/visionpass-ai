@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone *)",
+      "Bash(cmake --version)",
+      "Bash(arm-linux-gnueabihf-gcc --version)",
+      "Bash(dpkg -l)",
+      "Bash(awk '{print $2, $3}')",
+      "Read(//home/viper/linux/IMX6ULL/Board_Drivers/**)",
+      "Read(//usr/local/arm/**)",
+      "Bash(readelf -h /tmp/allocator.cpp.o)",
+      "Bash(arm-linux-gnueabihf-readelf -h /tmp/allocator.cpp.o)"
+    ]
+  }
+}
