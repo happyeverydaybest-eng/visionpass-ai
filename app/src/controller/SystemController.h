@@ -34,6 +34,10 @@
 
 /* 前向声明（避免头文件互相引用） */
 class V4L2CaptureThread;
+class FaceProcessThread;
+
+/* 人脸处理结果（定义在FaceProcessThread.h中） */
+struct FaceProcessResult;
 
 class SystemController : public QObject
 {
@@ -117,6 +121,7 @@ private:
 	FaceDetector *m_faceDetector;
 	FaceRecognizer *m_faceRecognizer;
 	V4L2CaptureThread *m_captureThread;  /* V4L2摄像头采集线程 */
+	FaceProcessThread *m_faceProcessThread; /* 人脸检测+识别线程 */
 
 	/* 系统状态 */
 	SystemState m_state;

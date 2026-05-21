@@ -7,6 +7,7 @@
 
 #include "SystemController.h"
 #include "src/capture/V4L2CaptureThread.h"
+#include "src/face/FaceProcessThread.h"
 #include <QDebug>
 
 SystemController::SystemController(QObject *parent)
@@ -18,6 +19,8 @@ SystemController::SystemController(QObject *parent)
 {
 	m_faceDetector = nullptr;
 	m_faceRecognizer = nullptr;
+	m_captureThread = nullptr;
+	m_faceProcessThread = nullptr;
 
 	/* 创建定时器 */
 	m_autoLockTimer = new QTimer(this);
@@ -34,6 +37,12 @@ SystemController::SystemController(QObject *parent)
 
 SystemController::~SystemController()
 {
+	/* 停止人脸处理线程 */
+	if (m_faceProcessThread) {
+		m_faceProcessThread->stopProcessing();
+		m_faceProcessThread->wait(5000);
+	}
+
 	/* 停止并等待摄像头采集线程（如果正在运行） */
 	if (m_captureThread) {
 		if (m_captureThread->isRunning()) {
@@ -82,6 +91,25 @@ bool SystemController::initialize()
 		qInfo() << "V4L2: Camera ready";
 	}
 
+	/* 初始化人脸处理线程 */
+	if (m_faceDetector && m_faceRecognizer) {
+		m_faceProcessThread = new FaceProcessThread(m_faceDetector, m_faceRecognizer, this);
+		/* 连接人脸检测结果 → Controller转发 → MainWindow */
+		connect(m_faceProcessThread, &FaceProcessThread::facesDetected,
+			this, &SystemController::facesDetected, Qt::QueuedConnection);
+		/* 使用lambda转换FaceProcessResult → RecognizeResult */
+		connect(m_faceProcessThread, &FaceProcessThread::recognitionResult,
+			this, [this](const FaceProcessResult &result) {
+				RecognizeResult rec;
+				rec.userId = result.userId;
+				rec.userName = result.userName;
+				rec.similarity = result.similarity;
+				rec.matched = result.matched;
+				emit faceRecognized(rec);
+			}, Qt::QueuedConnection);
+		qInfo() << "FaceProcessThread: Ready";
+	}
+
 	m_ready = allOk;
 	if (allOk) {
 		qInfo() << "SystemController: Initialized successfully, state=IDLE";
@@ -126,9 +154,18 @@ void SystemController::startFaceRecognition()
 	setState(FACE_SCANNING);
 	m_scanTimeoutTimer->start(m_scanTimeoutMs);
 
-	/* 启动摄像头采集线程 */
+	/* 启动人脸处理线程 */
+	if (m_faceProcessThread) {
+		m_faceProcessThread->start();
+		qInfo() << "FaceProcessThread: Started";
+	}
+
+	/* 启动摄像头采集线程，帧直接给人脸处理线程 */
 	if (m_captureThread && m_captureThread->isOpen()) {
-		m_captureThread->start();  /* 启动QThread */
+		/* 连接V4L2帧 → FaceProcessThread */
+		connect(m_captureThread, &V4L2CaptureThread::frameReady,
+			m_faceProcessThread, &FaceProcessThread::addFrame, Qt::QueuedConnection);
+		m_captureThread->start();
 		qInfo() << "V4L2: Capture thread started";
 	} else {
 		qWarning() << "V4L2: Camera not available, face recognition disabled";
@@ -143,6 +180,19 @@ void SystemController::stopFaceRecognition()
 		return;
 
 	m_scanTimeoutTimer->stop();
+
+	/* 断开V4L2帧与人脸处理线程的连接 */
+	if (m_captureThread && m_faceProcessThread) {
+		disconnect(m_captureThread, &V4L2CaptureThread::frameReady,
+			   m_faceProcessThread, &FaceProcessThread::addFrame);
+	}
+
+	/* 停止人脸处理线程 */
+	if (m_faceProcessThread && m_faceProcessThread->isRunning()) {
+		m_faceProcessThread->stopProcessing();
+		m_faceProcessThread->wait(5000);
+		qInfo() << "FaceProcessThread: Stopped";
+	}
 
 	/* 停止摄像头采集线程 */
 	if (m_captureThread && m_captureThread->isRunning()) {

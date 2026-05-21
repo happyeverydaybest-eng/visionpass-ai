@@ -61,10 +61,12 @@ set(NCNN_LIBRARIES "${NCNN_ARM_DIR}/lib/libncnn.a")
 set(FACE_SOURCES
     src/face/FaceDetector.cpp
     src/face/FaceRecognizer.cpp
+    src/face/FaceProcessThread.cpp
 )
 set(FACE_HEADERS
     src/face/FaceDetector.h
     src/face/FaceRecognizer.h
+    src/face/FaceProcessThread.h
 )
 
 # 系统控制器
@@ -163,6 +165,7 @@ target_compile_definitions(visionpass PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
 qt5_wrap_cpp(MOC_FILES
     src/face/FaceDetector.h
     src/face/FaceRecognizer.h
+    src/face/FaceProcessThread.h
     src/controller/SystemController.h
     src/capture/V4L2CaptureThread.h
     ui/MainWindow.h
