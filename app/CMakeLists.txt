@@ -20,7 +20,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Qt ARM路径
 set(QT_ARM_DIR "/home/viper/linux/tool/sysroot-combined/opt/qt5.12-arm")
-set(QT_QMAKE_EXECUTABLE "${QT_ARM_DIR}/bin/qmake")
 
 # NCNN ARM路径
 set(NCNN_ARM_DIR "/home/viper/ncnn/build-arm/install")
@@ -30,23 +29,18 @@ set(SYSROOT_DIR "/home/viper/linux/tool/sysroot-combined")
 
 # ==================== Qt配置 ====================
 
-# 自动查找Qt5模块（通过sysroot中的Qt）
 set(CMAKE_PREFIX_PATH "${QT_ARM_DIR}")
 find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets Network Sql Concurrent)
 
-# Qt moc/rcc/uic工具（用主机版本的，因为它们是代码生成器，不是编译器）
 set(Qt5Core_MOC_EXECUTABLE "${QT_ARM_DIR}/bin/moc")
 set(Qt5Core_RCC_EXECUTABLE "${QT_ARM_DIR}/bin/rcc")
 set(Qt5Core_UIC_EXECUTABLE "${QT_ARM_DIR}/bin/uic")
 
 # ==================== OpenCV配置 ====================
 
-# OpenCV在sysroot中（运行库已有，头文件已手动安装）
-# 因为没有OpenCVConfig.cmake，手动指定路径
 set(OpenCV_INCLUDE_DIRS "${SYSROOT_DIR}/usr/include/opencv2")
 set(OpenCV_LIB_DIR "${SYSROOT_DIR}/usr/lib")
 
-# OpenCV 3.1.0模块列表（只链接我们需要的模块）
 set(OPENCV_LIBS
     opencv_core
     opencv_imgproc
@@ -58,34 +52,85 @@ set(OPENCV_LIBS
 
 # ==================== NCNN配置 ====================
 
-# NCNN是静态库（libncnn.a），直接指定路径
 set(NCNN_INCLUDE_DIRS "${NCNN_ARM_DIR}/include/ncnn")
 set(NCNN_LIBRARIES "${NCNN_ARM_DIR}/lib/libncnn.a")
 
 # ==================== 源文件 ====================
 
+# 人脸模块（已有）
 set(FACE_SOURCES
     src/face/FaceDetector.cpp
     src/face/FaceRecognizer.cpp
 )
-
 set(FACE_HEADERS
     src/face/FaceDetector.h
     src/face/FaceRecognizer.h
 )
 
-# ==================== 构建目标 ====================
+# 系统控制器
+set(CONTROLLER_SOURCES
+    src/controller/SystemController.cpp
+)
+set(CONTROLLER_HEADERS
+    src/controller/SystemController.h
+    src/controller/SystemState.h
+)
 
-# 暂时只编译人脸模块为共享库（后续整合到主程序时改为可执行文件）
-add_library(visionpass_face STATIC ${FACE_SOURCES})
+# 视频采集
+set(CAPTURE_SOURCES
+    src/capture/V4L2CaptureThread.cpp
+)
+set(CAPTURE_HEADERS
+    src/capture/V4L2CaptureThread.h
+)
+
+# UI组件
+set(UI_SOURCES
+    ui/MainWindow.cpp
+    ui/NotificationOverlay.cpp
+)
+set(UI_HEADERS
+    ui/MainWindow.h
+    ui/NotificationOverlay.h
+)
+
+# 入口点
+set(MAIN_SOURCE
+    main.cpp
+)
+
+# 所有源文件汇总
+set(ALL_SOURCES
+    ${MAIN_SOURCE}
+    ${FACE_SOURCES}
+    ${CONTROLLER_SOURCES}
+    ${CAPTURE_SOURCES}
+    ${UI_SOURCES}
+)
+
+set(ALL_HEADERS
+    ${FACE_HEADERS}
+    ${CONTROLLER_HEADERS}
+    ${CAPTURE_HEADERS}
+    ${UI_HEADERS}
+)
+
+# ==================== 构建目标：可执行文件 ====================
+
+add_executable(visionpass ${ALL_SOURCES})
 
 # 包含路径
-target_include_directories(visionpass_face PUBLIC
+target_include_directories(visionpass PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src/face
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/controller
+    ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${QT_ARM_DIR}/include
     ${QT_ARM_DIR}/include/QtCore
     ${QT_ARM_DIR}/include/QtGui
     ${QT_ARM_DIR}/include/QtWidgets
+    ${QT_ARM_DIR}/include/QtNetwork
+    ${QT_ARM_DIR}/include/QtSql
     ${NCNN_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
     /usr/local/arm/gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf/arm-linux-gnueabihf/include/c++/4.9.4
@@ -93,22 +138,34 @@ target_include_directories(visionpass_face PUBLIC
     ${SYSROOT_DIR}/usr/include
 )
 
-# 链接库
-target_link_libraries(visionpass_face PUBLIC
+# 链接库（只链接核心OpenCV模块，移除依赖GTK/GStreamer的highgui/videoio）
+target_link_libraries(visionpass PRIVATE
     Qt5::Core
     Qt5::Gui
     Qt5::Widgets
+    Qt5::Network
+    Qt5::Sql
+    Qt5::Concurrent
     ${NCNN_LIBRARIES}
     ${OpenCV_LIB_DIR}/libopencv_core.so
     ${OpenCV_LIB_DIR}/libopencv_imgproc.so
     ${OpenCV_LIB_DIR}/libopencv_imgcodecs.so
     ${OpenCV_LIB_DIR}/libopencv_objdetect.so
-    ${OpenCV_LIB_DIR}/libopencv_highgui.so
-    ${OpenCV_LIB_DIR}/libopencv_videoio.so
     ${SYSROOT_DIR}/usr/lib/libz.so
     pthread
+    -Wl,--allow-shlib-undefined  # 允许未定义的共享库符号（运行时由开发板提供）
 )
 
-# Qt MOC处理（生成元对象代码，Qt信号槽机制需要）
-qt5_generate_moc(FaceDetector.h ${CMAKE_CURRENT_BINARY_DIR}/moc_FaceDetector.cpp)
-qt5_generate_moc(FaceRecognizer.h ${CMAKE_CURRENT_BINARY_DIR}/moc_FaceRecognizer.cpp)
+# GCC 4.9.4兼容旧ABI（OpenCV库可能使用新ABI编译）
+target_compile_definitions(visionpass PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
+
+# Qt MOC处理
+qt5_wrap_cpp(MOC_FILES
+    src/face/FaceDetector.h
+    src/face/FaceRecognizer.h
+    src/controller/SystemController.h
+    src/capture/V4L2CaptureThread.h
+    ui/MainWindow.h
+    ui/NotificationOverlay.h
+)
+target_sources(visionpass PRIVATE ${MOC_FILES})
