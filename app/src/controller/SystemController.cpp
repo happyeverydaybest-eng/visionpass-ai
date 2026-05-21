@@ -34,22 +34,38 @@ SystemController::SystemController(QObject *parent)
 
 SystemController::~SystemController()
 {
+	/* 停止并等待摄像头采集线程（如果正在运行） */
+	if (m_captureThread) {
+		if (m_captureThread->isRunning()) {
+			m_captureThread->stopCapture();
+			m_captureThread->wait(5000);  /* 等待最多5秒 */
+		}
+	}
+
+	/* 注意：m_faceDetector, m_faceRecognizer, m_captureThread 的 parent 都是 this，
+	 * 所以 ~QObject 会自动 delete 它们。
+	 * 但必须先停止线程（上面的代码），再让 ~QObject 删除对象。
+	 */
 }
 
 bool SystemController::initialize()
 {
 	qInfo() << "SystemController: Initializing...";
 
+	bool allOk = true;
+
 	/* 初始化人脸检测器（Haar级联） */
 	m_faceDetector = new FaceDetector(QString(), this);
 	if (!m_faceDetector->isLoaded()) {
 		qWarning() << "FaceDetector failed to load";
+		allOk = false;
 	}
 
 	/* 初始化人脸识别器（NCNN MobileFaceNet） */
 	m_faceRecognizer = new FaceRecognizer(QString(), 0.6f, this);
 	if (!m_faceRecognizer->isLoaded()) {
 		qWarning() << "FaceRecognizer failed to load";
+		allOk = false;
 	}
 
 	/* 初始化V4L2摄像头采集线程 */
@@ -58,6 +74,7 @@ bool SystemController::initialize()
 		qWarning() << "V4L2: Failed to open camera device";
 		delete m_captureThread;
 		m_captureThread = nullptr;
+		allOk = false;
 	} else {
 		/* 连接摄像头帧信号 → Controller转发 → MainWindow */
 		connect(m_captureThread, &V4L2CaptureThread::frameReady,
@@ -65,10 +82,14 @@ bool SystemController::initialize()
 		qInfo() << "V4L2: Camera ready";
 	}
 
-	m_ready = true;
-	qInfo() << "SystemController: Initialized, state=IDLE";
-	setState(IDLE);
-	return true;
+	m_ready = allOk;
+	if (allOk) {
+		qInfo() << "SystemController: Initialized successfully, state=IDLE";
+		setState(IDLE);
+	} else {
+		qWarning() << "SystemController: Partial initialization failure";
+	}
+	return allOk;
 }
 
 SystemState SystemController::state() const
@@ -95,6 +116,12 @@ void SystemController::startFaceRecognition()
 {
 	if (m_state != IDLE)
 		return;
+
+	/* 防止重复启动（如用户快速双击按钮） */
+	if (m_captureThread && m_captureThread->isRunning()) {
+		qWarning() << "Face recognition already running";
+		return;
+	}
 
 	setState(FACE_SCANNING);
 	m_scanTimeoutTimer->start(m_scanTimeoutMs);

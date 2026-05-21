@@ -33,6 +33,9 @@ NotificationOverlay::NotificationOverlay(QWidget *parent)
 void NotificationOverlay::showMessage(const QString &message,
 				       NotificationType type, int durationMs)
 {
+	/* 如果之前有未触发的定时器，先取消 */
+	m_autoHideTimer->stop();
+
 	/* 根据类型设置样式 */
 	QString bgColor, textColor;
 	switch (type) {
@@ -80,4 +83,20 @@ void NotificationOverlay::showMessage(const QString &message,
 void NotificationOverlay::hideMessage()
 {
 	hide();
+}
+
+/*
+ * 父窗口大小改变时重新居中
+ * 这个函数在父Widget大小改变时自动调用
+ */
+void NotificationOverlay::resizeEvent(QResizeEvent *event)
+{
+	QWidget::resizeEvent(event);
+
+	/* 重新计算居中位置 */
+	if (parentWidget()) {
+		int px = (parentWidget()->width() - width()) / 2;
+		int py = (parentWidget()->height() - height()) / 2;
+		move(px, py);
+	}
 }

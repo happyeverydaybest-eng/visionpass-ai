@@ -84,6 +84,7 @@ bool V4L2CaptureThread::openDevice()
 
 	/* 步骤3：初始化mmap缓冲区 */
 	if (!initBuffers()) {
+		freeBuffers();  /* 释放已分配的部分缓冲区 */
 		close(m_fd);
 		m_fd = -1;
 		return false;
@@ -266,6 +267,10 @@ void V4L2CaptureThread::run()
 
 		/* 取出已填充的缓冲区 */
 		if (ioctl(m_fd, VIDIOC_DQBUF, &buf) < 0) {
+			if (errno == EAGAIN) {
+				/* 非阻塞模式下无帧就绪，正常情况，继续循环 */
+				continue;
+			}
 			qWarning() << "V4L2: VIDIOC_DQBUF failed:" << strerror(errno);
 			continue;
 		}
@@ -276,14 +281,16 @@ void V4L2CaptureThread::run()
 		 * 摄像头数据格式：RGB565（16位/像素）
 		 * Qt格式：QImage::Format_RGB16
 		 *
-		 * 注意：QImage(data, width, height, format)不会拷贝数据，
-		 * 而是直接使用data指针。但V4L2缓冲区的数据会被下一帧覆盖，
-		 * 所以我们需要调用.copy()来深拷贝。
+		 * bytesPerLine = 每行像素数 × 每像素字节数
+		 * RGB565 = 2字节/像素，所以640像素 = 1280字节/行
+		 * 注意：V4L2驱动可能有padding，但OV2640通常没有
 		 */
 		unsigned char *frameData =
 			static_cast<unsigned char *>(m_buffers[buf.index].start);
 
-		QImage frame(frameData, m_width, m_height, QImage::Format_RGB16);
+		QImage frame(frameData, m_width, m_height,
+			     m_width * 2,  /* bytesPerLine: 640 * 2 = 1280 */
+			     QImage::Format_RGB16);
 
 		/*
 		 * 深拷贝：V4L2缓冲区会被下一帧覆盖，

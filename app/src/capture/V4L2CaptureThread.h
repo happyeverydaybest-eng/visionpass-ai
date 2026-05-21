@@ -46,6 +46,7 @@
 
 #include <QThread>
 #include <QImage>
+#include <atomic>
 #include <linux/videodev2.h>
 
 /* 缓冲区数量 */
@@ -125,7 +126,7 @@ private:
 	int m_fd;               /* 设备文件描述符 */
 	int m_width;            /* 视频宽度 */
 	int m_height;           /* 视频高度 */
-	bool m_running;         /* 线程运行标志 */
+	std::atomic<bool> m_running;     /* 线程运行标志（原子操作，防止数据竞争） */
 	bool m_deviceOpened;    /* 设备是否已打开 */
 
 	/*

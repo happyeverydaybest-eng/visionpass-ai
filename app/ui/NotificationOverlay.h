@@ -32,6 +32,10 @@ public:
 	/* 立即隐藏通知 */
 	void hideMessage();
 
+protected:
+	/* 父窗口大小改变时重新居中 */
+	void resizeEvent(QResizeEvent *event) override;
+
 private:
 	QLabel *m_messageLabel;
 	QTimer *m_autoHideTimer;

@@ -25,6 +25,9 @@
 
 #include <QObject>
 #include <QTimer>
+#include <QString>
+#include <QVector>
+#include <QRect>
 #include "SystemState.h"
 #include "src/face/FaceDetector.h"
 #include "src/face/FaceRecognizer.h"
