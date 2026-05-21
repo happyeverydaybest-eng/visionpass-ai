@@ -154,6 +154,9 @@ void MainWindow::initLayout()
 	/* 组装主布局 */
 	mainLayout->addWidget(videoContainer, 1);   /* stretch=1,占据剩余空间 */
 	mainLayout->addWidget(rightPanel);
+
+	/* 预存视频区目标尺寸（避免每次查询布局） */
+	m_videoTargetSize = m_videoLabel->size();
 }
 
 void MainWindow::initConnections()
@@ -259,14 +262,15 @@ void MainWindow::onFrameReady(const QImage &frame)
 {
 	m_currentFrame = frame;
 
-	/* 在视频区显示帧 */
-	QPixmap pixmap = QPixmap::fromImage(frame);
-	/* 缩放以适应视频区尺寸，保持宽高比 */
-	m_videoLabel->setPixmap(pixmap.scaled(
-		m_videoLabel->size(),
-		Qt::KeepAspectRatio,
-		Qt::FastTransformation  /* 快速缩放，嵌入式设备用FastTransformation */
-	));
+	/*
+	 * 性能优化（嵌入式ARM 528MHz）：
+	 * 1. 先用 QImage::scaled() 缩放（比 QPixmap::scaled() 快，避免双重转换）
+	 * 2. 再转为 QPixmap 显示
+	 * 3. 使用预存的 m_videoTargetSize 避免触发布局查询
+	 */
+	QImage scaled = frame.scaled(m_videoTargetSize, Qt::KeepAspectRatio,
+				     Qt::FastTransformation);
+	m_videoLabel->setPixmap(QPixmap::fromImage(scaled));
 }
 
 void MainWindow::onFaceRecognized(const RecognizeResult &result)

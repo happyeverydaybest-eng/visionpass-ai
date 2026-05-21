@@ -90,6 +90,9 @@ private:
 
 	/* 当前显示的视频帧（用于人脸框绘制） */
 	QImage m_currentFrame;
+
+	/* 视频区目标尺寸（预存，避免每次布局查询） */
+	QSize m_videoTargetSize;
 };
 
 #endif // MAINWINDOW_H
