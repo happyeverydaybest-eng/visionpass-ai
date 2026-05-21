@@ -123,6 +123,9 @@ private:
 	V4L2CaptureThread *m_captureThread;  /* V4L2摄像头采集线程 */
 	FaceProcessThread *m_faceProcessThread; /* 人脸检测+识别线程 */
 
+	/* V4L2帧到人脸处理线程的连接句柄（用于安全断开） */
+	QMetaObject::Connection m_frameToFaceConnection;
+
 	/* 系统状态 */
 	SystemState m_state;
 	bool m_ready;

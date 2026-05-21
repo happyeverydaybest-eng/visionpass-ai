@@ -31,6 +31,7 @@
 #include <QImage>
 #include <QRect>
 #include <QElapsedTimer>
+#include <atomic>
 #include "src/face/FaceDetector.h"
 #include "src/face/FaceRecognizer.h"
 

@@ -151,6 +151,12 @@ void SystemController::startFaceRecognition()
 		return;
 	}
 
+	/* 防止人脸处理线程重复启动 */
+	if (m_faceProcessThread && m_faceProcessThread->isRunning()) {
+		qWarning() << "Face processing already running";
+		return;
+	}
+
 	setState(FACE_SCANNING);
 	m_scanTimeoutTimer->start(m_scanTimeoutMs);
 
@@ -162,9 +168,10 @@ void SystemController::startFaceRecognition()
 
 	/* 启动摄像头采集线程，帧直接给人脸处理线程 */
 	if (m_captureThread && m_captureThread->isOpen()) {
-		/* 连接V4L2帧 → FaceProcessThread */
-		connect(m_captureThread, &V4L2CaptureThread::frameReady,
-			m_faceProcessThread, &FaceProcessThread::addFrame, Qt::QueuedConnection);
+		/* 连接V4L2帧 → FaceProcessThread，存储句柄以便安全断开 */
+		m_frameToFaceConnection = connect(m_captureThread, &V4L2CaptureThread::frameReady,
+						m_faceProcessThread, &FaceProcessThread::addFrame,
+						Qt::QueuedConnection);
 		m_captureThread->start();
 		qInfo() << "V4L2: Capture thread started";
 	} else {
@@ -181,10 +188,10 @@ void SystemController::stopFaceRecognition()
 
 	m_scanTimeoutTimer->stop();
 
-	/* 断开V4L2帧与人脸处理线程的连接 */
-	if (m_captureThread && m_faceProcessThread) {
-		disconnect(m_captureThread, &V4L2CaptureThread::frameReady,
-			   m_faceProcessThread, &FaceProcessThread::addFrame);
+	/* 断开V4L2帧与人脸处理线程的连接（通过句柄，更可靠） */
+	if (m_frameToFaceConnection) {
+		disconnect(m_frameToFaceConnection);
+		m_frameToFaceConnection = QMetaObject::Connection();
 	}
 
 	/* 停止人脸处理线程 */
