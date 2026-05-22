@@ -57,7 +57,7 @@ set(NCNN_LIBRARIES "${NCNN_ARM_DIR}/lib/libncnn.a")
 
 # ==================== 源文件 ====================
 
-# 人脸模块（已有）
+# 人脸模块
 set(FACE_SOURCES
     src/face/FaceDetector.cpp
     src/face/FaceRecognizer.cpp
@@ -90,20 +90,44 @@ set(CAPTURE_HEADERS
 set(HARDWARE_SOURCES
     src/hardware/RC522User.cpp
     src/hardware/RFIDThread.cpp
+    src/hardware/IRSensorMonitor.cpp
+    src/hardware/ServoControl.cpp
+    src/hardware/BeeperControl.cpp
 )
 set(HARDWARE_HEADERS
     src/hardware/RC522User.h
     src/hardware/RFIDThread.h
+    src/hardware/IRSensorMonitor.h
+    src/hardware/ServoControl.h
+    src/hardware/BeeperControl.h
+)
+
+# 数据库模块
+set(DATABASE_SOURCES
+    src/database/UserDatabase.cpp
+)
+set(DATABASE_HEADERS
+    src/database/UserDatabase.h
+)
+
+# 语音模块
+set(VOICE_SOURCES
+    src/voice/VoiceThread.cpp
+)
+set(VOICE_HEADERS
+    src/voice/VoiceThread.h
 )
 
 # UI组件
 set(UI_SOURCES
     ui/MainWindow.cpp
     ui/NotificationOverlay.cpp
+    ui/PasswordDialog.cpp
 )
 set(UI_HEADERS
     ui/MainWindow.h
     ui/NotificationOverlay.h
+    ui/PasswordDialog.h
 )
 
 # 入口点
@@ -118,6 +142,8 @@ set(ALL_SOURCES
     ${CONTROLLER_SOURCES}
     ${CAPTURE_SOURCES}
     ${HARDWARE_SOURCES}
+    ${DATABASE_SOURCES}
+    ${VOICE_SOURCES}
     ${UI_SOURCES}
 )
 
@@ -126,6 +152,8 @@ set(ALL_HEADERS
     ${CONTROLLER_HEADERS}
     ${CAPTURE_HEADERS}
     ${HARDWARE_HEADERS}
+    ${DATABASE_HEADERS}
+    ${VOICE_HEADERS}
     ${UI_HEADERS}
 )
 
@@ -138,6 +166,7 @@ target_include_directories(visionpass PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src/face
     ${CMAKE_CURRENT_SOURCE_DIR}/src/controller
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/database
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${QT_ARM_DIR}/include
     ${QT_ARM_DIR}/include/QtCore
@@ -173,7 +202,7 @@ target_link_libraries(visionpass PRIVATE
 # GCC 4.9.4兼容旧ABI（OpenCV库可能使用新ABI编译）
 target_compile_definitions(visionpass PRIVATE _GLIBCXX_USE_CXX11_ABI=0)
 
-# Qt MOC处理
+# Qt MOC处理（所有包含Q_OBJECT宏的头文件都需要MOC）
 qt5_wrap_cpp(MOC_FILES
     src/face/FaceDetector.h
     src/face/FaceRecognizer.h
@@ -181,7 +210,13 @@ qt5_wrap_cpp(MOC_FILES
     src/controller/SystemController.h
     src/capture/V4L2CaptureThread.h
     src/hardware/RFIDThread.h
+    src/hardware/IRSensorMonitor.h
+    src/hardware/ServoControl.h
+    src/hardware/BeeperControl.h
+    src/database/UserDatabase.h
+    src/voice/VoiceThread.h
     ui/MainWindow.h
     ui/NotificationOverlay.h
+    ui/PasswordDialog.h
 )
 target_sources(visionpass PRIVATE ${MOC_FILES})

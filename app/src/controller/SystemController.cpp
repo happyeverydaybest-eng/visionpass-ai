@@ -1,14 +1,22 @@
 /*
  * VisionPass 系统控制器实现
  *
- * 骨架版本：包含状态机基本逻辑和初始化框架
- * 后续逐步添加各硬件模块的实际操作
+ * 中央协调器：拥有所有硬件模块，管理状态机，桥接信号
+ *
+ * 信号流向：
+ *   硬件模块 → Controller信号 → MainWindow槽 → UI更新
+ *   UI按钮   → MainWindow信号 → Controller槽 → 启动对应硬件模块
  */
 
 #include "SystemController.h"
 #include "src/capture/V4L2CaptureThread.h"
 #include "src/face/FaceProcessThread.h"
 #include "src/hardware/RFIDThread.h"
+#include "src/hardware/IRSensorMonitor.h"
+#include "src/hardware/ServoControl.h"
+#include "src/hardware/BeeperControl.h"
+#include "src/database/UserDatabase.h"
+#include "src/voice/VoiceThread.h"
 #include <QDebug>
 
 SystemController::SystemController(QObject *parent)
@@ -23,6 +31,11 @@ SystemController::SystemController(QObject *parent)
 	m_captureThread = nullptr;
 	m_faceProcessThread = nullptr;
 	m_rfidThread = nullptr;
+	m_voiceThread = nullptr;
+	m_servoControl = nullptr;
+	m_beeperControl = nullptr;
+	m_irSensorMonitor = nullptr;
+	m_userDatabase = nullptr;
 
 	/* 创建定时器 */
 	m_autoLockTimer = new QTimer(this);
@@ -39,12 +52,21 @@ SystemController::SystemController(QObject *parent)
 
 SystemController::~SystemController()
 {
+	/*
+	 * 停止所有线程和模块（三步曲：stop → wait → 让QObject自动delete）
+	 * 必须先停止线程，再让~QObject删除对象，否则线程可能访问已释放内存
+	 */
+
+	/* 停止语音线程 */
+	if (m_voiceThread && m_voiceThread->isRunning()) {
+		m_voiceThread->stopListening();
+		m_voiceThread->wait(5000);
+	}
+
 	/* 停止RFID线程 */
-	if (m_rfidThread) {
-		if (m_rfidThread->isRunning()) {
-			m_rfidThread->stopPolling();
-			m_rfidThread->wait(5000);
-		}
+	if (m_rfidThread && m_rfidThread->isRunning()) {
+		m_rfidThread->stopPolling();
+		m_rfidThread->wait(5000);
 	}
 
 	/* 停止人脸处理线程 */
@@ -53,18 +75,28 @@ SystemController::~SystemController()
 		m_faceProcessThread->wait(5000);
 	}
 
-	/* 停止并等待摄像头采集线程（如果正在运行） */
-	if (m_captureThread) {
-		if (m_captureThread->isRunning()) {
-			m_captureThread->stopCapture();
-			m_captureThread->wait(5000);  /* 等待最多5秒 */
-		}
+	/* 停止摄像头采集线程 */
+	if (m_captureThread && m_captureThread->isRunning()) {
+		m_captureThread->stopCapture();
+		m_captureThread->wait(5000);
 	}
 
-	/* 注意：m_faceDetector, m_faceRecognizer, m_captureThread 的 parent 都是 this，
-	 * 所以 ~QObject 会自动 delete 它们。
-	 * 但必须先停止线程（上面的代码），再让 ~QObject 删除对象。
-	 */
+	/* 停止IR传感器监控 */
+	if (m_irSensorMonitor) {
+		m_irSensorMonitor->stop();
+	}
+
+	/* 关闭舵机设备（停止PWM） */
+	if (m_servoControl) {
+		m_servoControl->closeDevice();
+	}
+
+	/* 关闭数据库 */
+	if (m_userDatabase) {
+		m_userDatabase->close();
+	}
+
+	/* 所有QObject子对象的parent都是this，~QObject会自动delete它们 */
 }
 
 bool SystemController::initialize()
@@ -73,42 +105,39 @@ bool SystemController::initialize()
 
 	bool allOk = true;
 
-	/* 初始化人脸检测器（Haar级联） */
+	/* ===== 初始化人脸检测器（Haar级联） ===== */
 	m_faceDetector = new FaceDetector(QString(), this);
 	if (!m_faceDetector->isLoaded()) {
 		qWarning() << "FaceDetector failed to load";
 		allOk = false;
 	}
 
-	/* 初始化人脸识别器（NCNN MobileFaceNet） */
+	/* ===== 初始化人脸识别器（NCNN MobileFaceNet） ===== */
 	m_faceRecognizer = new FaceRecognizer(QString(), 0.6f, this);
 	if (!m_faceRecognizer->isLoaded()) {
 		qWarning() << "FaceRecognizer failed to load";
 		allOk = false;
 	}
 
-	/* 初始化V4L2摄像头采集线程 */
+	/* ===== 初始化V4L2摄像头采集线程 ===== */
 	m_captureThread = new V4L2CaptureThread("/dev/video0", this);
 	if (!m_captureThread->openDevice()) {
 		qWarning() << "V4L2: Failed to open camera device";
-		m_captureThread->setParent(nullptr);  /* 从QObject树中移除 */
+		m_captureThread->setParent(nullptr);
 		delete m_captureThread;
 		m_captureThread = nullptr;
 		allOk = false;
 	} else {
-		/* 连接摄像头帧信号 → Controller转发 → MainWindow */
 		connect(m_captureThread, &V4L2CaptureThread::frameReady,
 			this, &SystemController::frameReady, Qt::QueuedConnection);
 		qInfo() << "V4L2: Camera ready";
 	}
 
-	/* 初始化人脸处理线程 */
+	/* ===== 初始化人脸处理线程 ===== */
 	if (m_faceDetector && m_faceRecognizer) {
 		m_faceProcessThread = new FaceProcessThread(m_faceDetector, m_faceRecognizer, this);
-		/* 连接人脸检测结果 → Controller转发 → MainWindow */
 		connect(m_faceProcessThread, &FaceProcessThread::facesDetected,
 			this, &SystemController::facesDetected, Qt::QueuedConnection);
-		/* 使用lambda转换FaceProcessResult → RecognizeResult */
 		connect(m_faceProcessThread, &FaceProcessThread::recognitionResult,
 			this, [this](const FaceProcessResult &result) {
 				RecognizeResult rec;
@@ -117,17 +146,29 @@ bool SystemController::initialize()
 				rec.similarity = result.similarity;
 				rec.matched = result.matched;
 				emit faceRecognized(rec);
+
+				/* 人脸匹配成功 → 自动开锁 */
+				if (result.matched) {
+					unlockDoor();
+				}
 			}, Qt::QueuedConnection);
 		qInfo() << "FaceProcessThread: Ready";
 	}
 
-	/* 初始化RFID线程 */
+	/* ===== 初始化RFID线程 ===== */
 	m_rfidThread = new RFIDThread(this);
-	/* I1: 先连接信号，再初始化设备（确保错误信号能被接收） */
+	/* 先连接信号，再初始化设备（确保错误信号能被接收） */
 	connect(m_rfidThread, &RFIDThread::cardDetected,
-		this, &SystemController::cardDetected, Qt::QueuedConnection);
+		this, [this](const QString &uid, const QString &userName) {
+			/* RFID匹配成功 → 自动开锁 */
+			emit cardDetected(uid, userName);
+			unlockDoor();
+		}, Qt::QueuedConnection);
 	connect(m_rfidThread, &RFIDThread::unauthorizedCard,
-		this, &SystemController::unauthorizedCard, Qt::QueuedConnection);
+		this, [this](const QString &cardId) {
+			emit unauthorizedCard(cardId);
+			emit notification("未授权卡片: " + cardId, ALARM);
+		}, Qt::QueuedConnection);
 	connect(m_rfidThread, &RFIDThread::deviceError,
 		this, [this](const QString &error) {
 			emit notification(error, ALARM);
@@ -135,18 +176,80 @@ bool SystemController::initialize()
 
 	if (!m_rfidThread->initDevice()) {
 		qWarning() << "RFIDThread: Failed to initialize RC522";
-		/*
-		 * 不要delete m_rfidThread（QObject父子机制会自动删除）
-		 * 只需将指针置空，防止后续代码误用
-		 * ~SystemController中~QObject会统一delete所有子对象
-		 */
-		m_rfidThread->setParent(nullptr);  /* 从QObject树中移除 */
+		m_rfidThread->setParent(nullptr);
 		delete m_rfidThread;
 		m_rfidThread = nullptr;
 		allOk = false;
 	} else {
 		qInfo() << "RFIDThread: Ready";
 	}
+
+	/* ===== 初始化舵机控制 ===== */
+	m_servoControl = new ServoControl(this);
+	if (!m_servoControl->openDevice()) {
+		qWarning() << "ServoControl: Failed to open /dev/servo";
+		/* 舵机不可用不是致命错误，继续运行 */
+	} else {
+		qInfo() << "ServoControl: Ready";
+	}
+
+	/* ===== 初始化蜂鸣器 ===== */
+	m_beeperControl = new BeeperControl(this);
+	qInfo() << "BeeperControl: Ready";
+
+	/* ===== 初始化IR传感器监控 ===== */
+	m_irSensorMonitor = new IRSensorMonitor(this);
+	connect(m_irSensorMonitor, &IRSensorMonitor::personDetected,
+		this, [this]() {
+			/* 检测到人靠近 → 自动启动人脸扫描 */
+			if (m_state == IDLE) {
+				qInfo() << "IR: Person detected, auto-starting face recognition";
+				startFaceRecognition();
+			}
+		}, Qt::QueuedConnection);
+	connect(m_irSensorMonitor, &IRSensorMonitor::personLeft,
+		this, [this]() {
+			/* 人离开 → 如果正在扫描则停止 */
+			if (m_state == FACE_SCANNING) {
+				qInfo() << "IR: Person left, stopping face recognition";
+				stopFaceRecognition();
+			}
+		}, Qt::QueuedConnection);
+	connect(m_irSensorMonitor, &IRSensorMonitor::deviceError,
+		this, [this](const QString &error) {
+			emit notification(error, ALARM);
+		}, Qt::QueuedConnection);
+
+	if (!m_irSensorMonitor->start()) {
+		qWarning() << "IRSensorMonitor: Failed to start";
+		/* IR传感器不可用不是致命错误 */
+	} else {
+		qInfo() << "IRSensorMonitor: Started";
+	}
+
+	/* ===== 初始化用户数据库 ===== */
+	m_userDatabase = new UserDatabase(this);
+	if (!m_userDatabase->open()) {
+		qWarning() << "UserDatabase: Failed to open";
+		/* 数据库不可用不是致命错误（首次运行） */
+	} else {
+		qInfo() << "UserDatabase: Ready";
+	}
+
+	/* ===== 初始化语音识别线程 ===== */
+	m_voiceThread = new VoiceThread(this);
+	connect(m_voiceThread, &VoiceThread::voiceCommandDetected,
+		this, [this](const QString &command) {
+			if (command == "开门") {
+				emit notification("语音指令识别成功", UNLOCKED);
+				unlockDoor();
+			}
+		}, Qt::QueuedConnection);
+	connect(m_voiceThread, &VoiceThread::deviceError,
+		this, [this](const QString &error) {
+			emit notification(error, ALARM);
+		}, Qt::QueuedConnection);
+	qInfo() << "VoiceThread: Ready (DTW placeholder)";
 
 	m_ready = allOk;
 	if (allOk) {
@@ -189,7 +292,6 @@ void SystemController::startFaceRecognition()
 		return;
 	}
 
-	/* 防止人脸处理线程重复启动 */
 	if (m_faceProcessThread && m_faceProcessThread->isRunning()) {
 		qWarning() << "Face processing already running";
 		return;
@@ -206,7 +308,6 @@ void SystemController::startFaceRecognition()
 
 	/* 启动摄像头采集线程，帧直接给人脸处理线程 */
 	if (m_captureThread && m_captureThread->isOpen()) {
-		/* 连接V4L2帧 → FaceProcessThread，存储句柄以便安全断开 */
 		m_frameToFaceConnection = connect(m_captureThread, &V4L2CaptureThread::frameReady,
 						m_faceProcessThread, &FaceProcessThread::addFrame,
 						Qt::QueuedConnection);
@@ -226,7 +327,7 @@ void SystemController::stopFaceRecognition()
 
 	m_scanTimeoutTimer->stop();
 
-	/* 断开V4L2帧与人脸处理线程的连接（通过句柄，更可靠） */
+	/* 断开V4L2帧与人脸处理线程的连接 */
 	if (m_frameToFaceConnection) {
 		disconnect(m_frameToFaceConnection);
 		m_frameToFaceConnection = QMetaObject::Connection();
@@ -242,7 +343,7 @@ void SystemController::stopFaceRecognition()
 	/* 停止摄像头采集线程 */
 	if (m_captureThread && m_captureThread->isRunning()) {
 		m_captureThread->stopCapture();
-		m_captureThread->wait(3000);  /* 等待最多3秒 */
+		m_captureThread->wait(3000);
 		qInfo() << "V4L2: Capture thread stopped";
 	}
 
@@ -255,7 +356,6 @@ void SystemController::startCardReading()
 	if (m_state != IDLE)
 		return;
 
-	/* 防止重复启动（如用户快速双击按钮） */
 	if (m_rfidThread && m_rfidThread->isRunning()) {
 		qWarning() << "RFID reading already running";
 		return;
@@ -264,7 +364,6 @@ void SystemController::startCardReading()
 	setState(RFID_WAITING);
 	m_scanTimeoutTimer->start(m_scanTimeoutMs);
 
-	/* 启动RFID轮询线程 */
 	if (m_rfidThread && !m_rfidThread->isRunning()) {
 		m_rfidThread->start();
 		qInfo() << "RFIDThread: Started";
@@ -282,7 +381,6 @@ void SystemController::stopCardReading()
 
 	m_scanTimeoutTimer->stop();
 
-	/* 停止RFID轮询线程 */
 	if (m_rfidThread && m_rfidThread->isRunning()) {
 		m_rfidThread->stopPolling();
 		m_rfidThread->wait(5000);
@@ -295,8 +393,34 @@ void SystemController::stopCardReading()
 
 void SystemController::verifyPassword(const QString &password)
 {
-	/* 后续：从UserDatabase读取密码哈希比对 */
-	qInfo() << "Password verification requested:" << password;
+	if (!m_userDatabase || !m_userDatabase->isOpen()) {
+		qWarning() << "UserDatabase not available";
+		emit notification("密码验证失败：数据库不可用", ALARM);
+		setState(IDLE);
+		return;
+	}
+
+	/* 计算输入密码的SHA-256哈希 */
+	QString hash = UserDatabase::hashPassword(password);
+
+	/* 与数据库中存储的密码哈希比对 */
+	QVector<UserInfo> users = m_userDatabase->getAllUsers();
+	bool matched = false;
+	for (const UserInfo &user : users) {
+		if (user.passwordHash == hash) {
+			matched = true;
+			emit notification(QString("欢迎, %1!").arg(user.name), UNLOCKED);
+			unlockDoor();
+			break;
+		}
+	}
+
+	if (!matched) {
+		emit notification("密码错误", ALARM);
+		if (m_beeperControl) m_beeperControl->beepError();
+	}
+
+	setState(IDLE);
 }
 
 void SystemController::startVoiceRecognition()
@@ -307,7 +431,11 @@ void SystemController::startVoiceRecognition()
 	setState(VOICE_LISTENING);
 	m_scanTimeoutTimer->start(5000);  /* 语音5秒超时 */
 
-	/* 后续：启动VoiceThread */
+	if (m_voiceThread && !m_voiceThread->isRunning()) {
+		m_voiceThread->start();
+		qInfo() << "VoiceThread: Started";
+	}
+
 	qInfo() << "Voice recognition started";
 }
 
@@ -317,9 +445,14 @@ void SystemController::stopVoiceRecognition()
 		return;
 
 	m_scanTimeoutTimer->stop();
-	setState(IDLE);
 
-	/* 后续：停止VoiceThread */
+	if (m_voiceThread && m_voiceThread->isRunning()) {
+		m_voiceThread->stopListening();
+		m_voiceThread->wait(5000);
+		qInfo() << "VoiceThread: Stopped";
+	}
+
+	setState(IDLE);
 	qInfo() << "Voice recognition stopped";
 }
 
@@ -331,14 +464,27 @@ void SystemController::startPasswordInput()
 
 void SystemController::unlockDoor()
 {
+	/* 防止重复开锁 */
+	if (m_state == UNLOCKED)
+		return;
+
 	setState(UNLOCKED);
 	emit doorUnlocked();
 	emit notification("门已打开", UNLOCKED);
 
+	/* 舵机开锁（90度） */
+	if (m_servoControl && m_servoControl->isOpen()) {
+		m_servoControl->unlock();
+	}
+
+	/* 蜂鸣器成功提示 */
+	if (m_beeperControl) {
+		m_beeperControl->beepSuccess();
+	}
+
 	/* 启动自动关锁定时器 */
 	m_autoLockTimer->start(m_autoLockDelayMs);
 
-	/* 后续：ServoControl转到90度 */
 	qInfo() << "Door unlocked, auto-lock in" << m_autoLockDelayMs << "ms";
 }
 
@@ -351,6 +497,10 @@ void SystemController::lockDoor()
 	emit doorLocked();
 	emit notification("门已锁定", IDLE);
 
-	/* 后续：ServoControl转到0度 */
+	/* 舵机关锁（0度） */
+	if (m_servoControl && m_servoControl->isOpen()) {
+		m_servoControl->lock();
+	}
+
 	qInfo() << "Door locked";
 }

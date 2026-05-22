@@ -36,6 +36,11 @@
 class V4L2CaptureThread;
 class FaceProcessThread;
 class RFIDThread;
+class VoiceThread;
+class ServoControl;
+class BeeperControl;
+class IRSensorMonitor;
+class UserDatabase;
 
 /* 人脸处理结果（定义在FaceProcessThread.h中） */
 struct FaceProcessResult;
@@ -124,6 +129,11 @@ private:
 	V4L2CaptureThread *m_captureThread;  /* V4L2摄像头采集线程 */
 	FaceProcessThread *m_faceProcessThread; /* 人脸检测+识别线程 */
 	RFIDThread *m_rfidThread;             /* RFID刷卡线程 */
+	VoiceThread *m_voiceThread;           /* 语音识别线程 */
+	ServoControl *m_servoControl;         /* 舵机控制 */
+	BeeperControl *m_beeperControl;       /* 蜂鸣器控制 */
+	IRSensorMonitor *m_irSensorMonitor;   /* IR传感器监控 */
+	UserDatabase *m_userDatabase;         /* 用户数据库 */
 
 	/* V4L2帧到人脸处理线程的连接句柄（用于安全断开） */
 	QMetaObject::Connection m_frameToFaceConnection;
