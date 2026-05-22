@@ -59,8 +59,18 @@ void RFIDThread::run()
 		return;
 	}
 
-	m_running = true;
-	qInfo() << "RFIDThread: Polling started, interval=" << m_pollIntervalMs << "ms";
+	/*
+	 * 原子设置m_running：防止与stopPolling()的竞态条件
+	 * 如果stopPolling()在QThread::start()后、run()开始前被调用，
+	 * 这里会检测到m_running已经被设为false，直接返回
+	 */
+	bool expected = false;
+	if (!m_running.compare_exchange_strong(expected, true)) {
+		qWarning() << "RFIDThread: stopPolling was called before run() started";
+		return;
+	}
+
+	qInfo() << "RFIDThread: Polling started, interval=" << m_pollIntervalMs.load() << "ms";
 
 	QString lastUid;
 	int lastUidCount = 0;  /* 连续检测到同一张卡的次数 */

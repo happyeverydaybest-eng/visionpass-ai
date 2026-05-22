@@ -9,7 +9,6 @@
 #define RC522USER_H
 
 #include <QString>
-#include <QVector>
 
 /*
  * RC522用户空间操作类
@@ -70,7 +69,7 @@ private:
 	uint8_t readReg(uint8_t addr);
 	void writeReg(uint8_t addr, uint8_t val);
 
-	/* 置位/清位 */
+	/* 置位/清位（使用RC522 Set/Clear寄存器优化） */
 	void setBitMask(uint8_t reg, uint8_t mask);
 	void clearBitMask(uint8_t reg, uint8_t mask);
 
@@ -80,7 +79,7 @@ private:
 
 	/* 核心通信 */
 	char communicate(uint8_t command, uint8_t *inData, uint8_t inLen,
-		         uint8_t *outData, uint32_t &outLenBit);
+		         uint8_t *outData, uint32_t outBufSize, uint32_t &outLenBit);
 
 	/* 寻卡 */
 	char request(uint8_t reqCode, uint8_t *tagType);
@@ -95,8 +94,7 @@ private:
 	/* 休眠 */
 	char halt();
 
-	int m_fd;          /* 文件描述符 */
-	bool m_opened;     /* 是否已打开 */
+	int m_fd;          /* 文件描述符（>=0表示已打开） */
 };
 
 #endif // RC522USER_H

@@ -91,6 +91,7 @@ bool SystemController::initialize()
 	m_captureThread = new V4L2CaptureThread("/dev/video0", this);
 	if (!m_captureThread->openDevice()) {
 		qWarning() << "V4L2: Failed to open camera device";
+		m_captureThread->setParent(nullptr);  /* 从QObject树中移除 */
 		delete m_captureThread;
 		m_captureThread = nullptr;
 		allOk = false;
@@ -134,8 +135,15 @@ bool SystemController::initialize()
 
 	if (!m_rfidThread->initDevice()) {
 		qWarning() << "RFIDThread: Failed to initialize RC522";
+		/*
+		 * 不要delete m_rfidThread（QObject父子机制会自动删除）
+		 * 只需将指针置空，防止后续代码误用
+		 * ~SystemController中~QObject会统一delete所有子对象
+		 */
+		m_rfidThread->setParent(nullptr);  /* 从QObject树中移除 */
 		delete m_rfidThread;
 		m_rfidThread = nullptr;
+		allOk = false;
 	} else {
 		qInfo() << "RFIDThread: Ready";
 	}
@@ -247,14 +255,20 @@ void SystemController::startCardReading()
 	if (m_state != IDLE)
 		return;
 
+	/* 防止重复启动（如用户快速双击按钮） */
+	if (m_rfidThread && m_rfidThread->isRunning()) {
+		qWarning() << "RFID reading already running";
+		return;
+	}
+
 	setState(RFID_WAITING);
 	m_scanTimeoutTimer->start(m_scanTimeoutMs);
 
 	/* 启动RFID轮询线程 */
-	if (m_rfidThread) {
+	if (m_rfidThread && !m_rfidThread->isRunning()) {
 		m_rfidThread->start();
 		qInfo() << "RFIDThread: Started";
-	} else {
+	} else if (!m_rfidThread) {
 		qWarning() << "RFIDThread: Not available";
 	}
 
