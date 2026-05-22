@@ -21,8 +21,7 @@ SystemController::SystemController(QObject *parent)
 	m_faceDetector = nullptr;
 	m_faceRecognizer = nullptr;
 	m_captureThread = nullptr;
-	m_faceProcessThread = nullptr;
-	m_rfidThread = nullptr;
+	m_faceProcessThread = nullptr;\n\tm_rfidThread = nullptr;
 
 	/* 创建定时器 */
 	m_autoLockTimer = new QTimer(this);
@@ -53,17 +52,33 @@ SystemController::~SystemController()
 		m_faceProcessThread->wait(5000);
 	}
 
-	/* 停止并等待摄像头采集线程（如果正在运行） */
+	/* 停止RFID线程 */
+	if (m_rfidThread) {
+		if (m_rfidThread->isRunning()) {
+			m_rfidThread->stopPolling();
+			m_rfidThread->wait(5000);
+		}
+	}
+        /* 停止并等待摄像头采集线程（如果正在运行） */
 	if (m_captureThread) {
 		if (m_captureThread->isRunning()) {
 			m_captureThread->stopCapture();
-			m_captureThread->wait(5000);  /* 等待最多5秒 */
+			m_captureThread->wait(5000);
+		}
+	}
+
+	/* 停止RFID线程 */
+	if (m_rfidThread) {
+		if (m_rfidThread->isRunning()) {
+			m_rfidThread->stopPolling();
+			m_rfidThread->wait(5000);
 		}
 	}
 
 	/* 注意：m_faceDetector, m_faceRecognizer, m_captureThread 的 parent 都是 this，
 	 * 所以 ~QObject 会自动 delete 它们。
 	 * 但必须先停止线程（上面的代码），再让 ~QObject 删除对象。
+	 */
 	 */
 }
 
@@ -118,25 +133,6 @@ bool SystemController::initialize()
 				emit faceRecognized(rec);
 			}, Qt::QueuedConnection);
 		qInfo() << "FaceProcessThread: Ready";
-	}
-
-	/* 初始化RFID线程 */
-	m_rfidThread = new RFIDThread(this);
-	if (!m_rfidThread->initDevice()) {
-		qWarning() << "RFIDThread: Failed to initialize RC522";
-		delete m_rfidThread;
-		m_rfidThread = nullptr;
-	} else {
-		/* 连接RFID信号 → Controller转发 → MainWindow */
-		connect(m_rfidThread, &RFIDThread::cardDetected,
-			this, &SystemController::cardDetected, Qt::QueuedConnection);
-		connect(m_rfidThread, &RFIDThread::unauthorizedCard,
-			this, &SystemController::unauthorizedCard, Qt::QueuedConnection);
-		connect(m_rfidThread, &RFIDThread::deviceError,
-			this, [this](const QString &error) {
-				emit notification(error, ALARM);
-			}, Qt::QueuedConnection);
-		qInfo() << "RFIDThread: Ready";
 	}
 
 	m_ready = allOk;
@@ -223,6 +219,14 @@ void SystemController::stopFaceRecognition()
 		m_frameToFaceConnection = QMetaObject::Connection();
 	}
 
+	/* 停止RFID线程 */
+	if (m_rfidThread) {
+		if (m_rfidThread->isRunning()) {
+			m_rfidThread->stopPolling();
+			m_rfidThread->wait(5000);
+		}
+	}
+
 	/* 停止人脸处理线程 */
 	if (m_faceProcessThread && m_faceProcessThread->isRunning()) {
 		m_faceProcessThread->stopProcessing();
@@ -249,14 +253,7 @@ void SystemController::startCardReading()
 	setState(RFID_WAITING);
 	m_scanTimeoutTimer->start(m_scanTimeoutMs);
 
-	/* 启动RFID轮询线程 */
-	if (m_rfidThread) {
-		m_rfidThread->start();
-		qInfo() << "RFIDThread: Started";
-	} else {
-		qWarning() << "RFIDThread: Not available";
-	}
-
+	/* 后续：启动RFIDThread轮询 */
 	qInfo() << "Card reading started";
 }
 
@@ -266,15 +263,9 @@ void SystemController::stopCardReading()
 		return;
 
 	m_scanTimeoutTimer->stop();
-
-	/* 停止RFID轮询线程 */
-	if (m_rfidThread && m_rfidThread->isRunning()) {
-		m_rfidThread->stopPolling();
-		m_rfidThread->wait(5000);
-		qInfo() << "RFIDThread: Stopped";
-	}
-
 	setState(IDLE);
+
+	/* 后续：停止RFIDThread */
 	qInfo() << "Card reading stopped";
 }
 

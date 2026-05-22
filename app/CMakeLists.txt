@@ -86,6 +86,16 @@ set(CAPTURE_HEADERS
     src/capture/V4L2CaptureThread.h
 )
 
+# 硬件模块
+set(HARDWARE_SOURCES
+    src/hardware/RC522User.cpp
+    src/hardware/RFIDThread.cpp
+)
+set(HARDWARE_HEADERS
+    src/hardware/RC522User.h
+    src/hardware/RFIDThread.h
+)
+
 # UI组件
 set(UI_SOURCES
     ui/MainWindow.cpp
@@ -107,6 +117,7 @@ set(ALL_SOURCES
     ${FACE_SOURCES}
     ${CONTROLLER_SOURCES}
     ${CAPTURE_SOURCES}
+    ${HARDWARE_SOURCES}
     ${UI_SOURCES}
 )
 
@@ -114,6 +125,7 @@ set(ALL_HEADERS
     ${FACE_HEADERS}
     ${CONTROLLER_HEADERS}
     ${CAPTURE_HEADERS}
+    ${HARDWARE_HEADERS}
     ${UI_HEADERS}
 )
 
@@ -168,6 +180,7 @@ qt5_wrap_cpp(MOC_FILES
     src/face/FaceProcessThread.h
     src/controller/SystemController.h
     src/capture/V4L2CaptureThread.h
+    src/hardware/RFIDThread.h
     ui/MainWindow.h
     ui/NotificationOverlay.h
 )
