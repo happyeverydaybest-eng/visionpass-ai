@@ -36,11 +36,11 @@ public:
 	bool isOpen() const;
 
 	/* 开锁：舵机转到90度 */
-	void unlock();
+	bool unlock();
 	/* 关锁：舵机转到0度 */
-	void lock();
+	bool lock();
 	/* 设置任意角度（0~180） */
-	void setAngle(int angle);
+	bool setAngle(int angle);
 
 signals:
 	/* 开锁完成 */

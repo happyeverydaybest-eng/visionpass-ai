@@ -16,6 +16,7 @@
 #include <QObject>
 #include <QTimer>
 #include <QList>
+#include <QFile>
 
 class BeeperControl : public QObject
 {
@@ -50,6 +51,7 @@ private:
 	QList<int> m_sequence;      /* 当前蜂鸣序列（毫秒） */
 	int m_currentStep;          /* 当前步骤索引 */
 	bool m_beepAvailable;       /* 蜂鸣器设备是否可用 */
+	QFile *m_beepFile;          /* sysfs文件句柄（保持打开以避免重复open/close） */
 };
 
 #endif // BEEPERCONTROL_H

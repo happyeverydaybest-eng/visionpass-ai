@@ -391,6 +391,50 @@ void SystemController::stopCardReading()
 	qInfo() << "Card reading stopped";
 }
 
+/*
+ * 停止所有正在进行的扫描（人脸/RFID/语音）
+ * 用于unlockDoor()等需要强制清理所有子系统的场景
+ * 与stopFaceRecognition/stopCardReading/stopVoiceRecognition不同，
+ * 此方法不检查当前状态，而是根据线程运行状态强制停止
+ */
+void SystemController::stopAllActiveScanning()
+{
+	m_scanTimeoutTimer->stop();
+
+	/* 停止人脸扫描（如果正在运行） */
+	if (m_captureThread && m_captureThread->isRunning()) {
+		/* 断开V4L2帧与人脸处理线程的连接 */
+		if (m_frameToFaceConnection) {
+			disconnect(m_frameToFaceConnection);
+			m_frameToFaceConnection = QMetaObject::Connection();
+		}
+
+		if (m_faceProcessThread && m_faceProcessThread->isRunning()) {
+			m_faceProcessThread->stopProcessing();
+			m_faceProcessThread->wait(5000);
+			qInfo() << "FaceProcessThread: Stopped (force)";
+		}
+
+		m_captureThread->stopCapture();
+		m_captureThread->wait(3000);
+		qInfo() << "V4L2: Capture thread stopped (force)";
+	}
+
+	/* 停止RFID扫描（如果正在运行） */
+	if (m_rfidThread && m_rfidThread->isRunning()) {
+		m_rfidThread->stopPolling();
+		m_rfidThread->wait(5000);
+		qInfo() << "RFIDThread: Stopped (force)";
+	}
+
+	/* 停止语音识别（如果正在运行） */
+	if (m_voiceThread && m_voiceThread->isRunning()) {
+		m_voiceThread->stopListening();
+		m_voiceThread->wait(5000);
+		qInfo() << "VoiceThread: Stopped (force)";
+	}
+}
+
 void SystemController::verifyPassword(const QString &password)
 {
 	if (!m_userDatabase || !m_userDatabase->isOpen()) {
@@ -403,19 +447,16 @@ void SystemController::verifyPassword(const QString &password)
 	/* 计算输入密码的SHA-256哈希 */
 	QString hash = UserDatabase::hashPassword(password);
 
-	/* 与数据库中存储的密码哈希比对 */
-	QVector<UserInfo> users = m_userDatabase->getAllUsers();
-	bool matched = false;
-	for (const UserInfo &user : users) {
-		if (user.passwordHash == hash) {
-			matched = true;
-			emit notification(QString("欢迎, %1!").arg(user.name), UNLOCKED);
-			unlockDoor();
-			break;
-		}
-	}
+	/*
+	 * 使用优化的SQL查询直接匹配密码哈希
+	 * 只查询id, name, password_hash字段，不加载人脸特征BLOB（节省~500ms）
+	 */
+	UserInfo user = m_userDatabase->findUserByPasswordHash(hash);
 
-	if (!matched) {
+	if (!user.id.isEmpty()) {
+		emit notification(QString("欢迎, %1!").arg(user.name), UNLOCKED);
+		unlockDoor();
+	} else {
 		emit notification("密码错误", ALARM);
 		if (m_beeperControl) m_beeperControl->beepError();
 	}
@@ -468,13 +509,19 @@ void SystemController::unlockDoor()
 	if (m_state == UNLOCKED)
 		return;
 
+	/* 停止所有正在进行的扫描（人脸/RFID/语音），避免线程继续运行 */
+	stopAllActiveScanning();
+
 	setState(UNLOCKED);
 	emit doorUnlocked();
 	emit notification("门已打开", UNLOCKED);
 
 	/* 舵机开锁（90度） */
 	if (m_servoControl && m_servoControl->isOpen()) {
-		m_servoControl->unlock();
+		if (!m_servoControl->unlock()) {
+			qWarning() << "SystemController: Servo unlock failed";
+			emit notification("舵机开锁失败", ALARM);
+		}
 	}
 
 	/* 蜂鸣器成功提示 */

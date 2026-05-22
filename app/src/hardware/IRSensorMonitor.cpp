@@ -17,26 +17,25 @@ IRSensorMonitor::IRSensorMonitor(QObject *parent)
 	  m_lastState(false),
 	  m_monitoring(false)
 {
+	/* 创建轮询定时器（生命周期由Qt父对象管理） */
+	m_pollTimer = new QTimer(this);
+	connect(m_pollTimer, &QTimer::timeout, this, &IRSensorMonitor::poll);
 }
 
 IRSensorMonitor::~IRSensorMonitor()
 {
 	stop();
 
-	/* 释放设备文件对象 */
+	/* 释放设备文件对象（m_pollTimer由Qt父对象自动管理，无需手动删除） */
 	delete m_device;
 	m_device = nullptr;
-
-	/* 释放定时器 */
-	delete m_pollTimer;
-	m_pollTimer = nullptr;
 }
 
 /*
  * 启动监控
  * 1. 打开 /dev/ir_sensor
  * 2. 读取初始状态
- * 3. 创建500ms轮询定时器
+ * 3. 启动500ms轮询定时器
  */
 bool IRSensorMonitor::start()
 {
@@ -59,9 +58,7 @@ bool IRSensorMonitor::start()
 	m_lastState = (data == "1");
 	qInfo() << "IRSensorMonitor: Initial state =" << (m_lastState ? "person detected" : "no person");
 
-	/* 创建轮询定时器 */
-	m_pollTimer = new QTimer(this);
-	connect(m_pollTimer, &QTimer::timeout, this, &IRSensorMonitor::poll);
+	/* 启动轮询定时器 */
 	m_pollTimer->start(500);  /* 每500ms轮询一次 */
 
 	m_monitoring = true;
@@ -78,6 +75,10 @@ void IRSensorMonitor::stop()
 	if (m_device && m_device->isOpen()) {
 		m_device->close();
 	}
+
+	/* 释放设备文件对象，防止内存泄漏 */
+	delete m_device;
+	m_device = nullptr;
 
 	m_monitoring = false;
 }

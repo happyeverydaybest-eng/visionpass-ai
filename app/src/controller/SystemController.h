@@ -123,6 +123,9 @@ private:
 	/* 状态机核心：切换状态并发射信号 */
 	void setState(SystemState newState);
 
+	/* 停止所有正在进行的扫描（人脸/RFID/语音） */
+	void stopAllActiveScanning();
+
 	/* 各模块指针 */
 	FaceDetector *m_faceDetector;
 	FaceRecognizer *m_faceRecognizer;

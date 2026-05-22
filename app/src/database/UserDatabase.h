@@ -136,6 +136,13 @@ public:
 	QString findUserByCardUid(const QString &cardUid);
 
 	/*
+	 * 根据密码哈希查找用户（用于密码验证）
+	 * 返回值：用户信息结构体（如果未找到，id为空字符串）
+	 * 注意：此方法只查询id, name, password_hash字段，不加载人脸特征BLOB
+	 */
+	UserInfo findUserByPasswordHash(const QString &passwordHash);
+
+	/*
 	 * 获取所有已注册人脸特征的用户（用于人脸识别比对）
 	 * 返回值：map<用户ID, 特征向量>
 	 */

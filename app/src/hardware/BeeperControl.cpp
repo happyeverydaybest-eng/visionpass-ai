@@ -19,16 +19,28 @@ BeeperControl::BeeperControl(QObject *parent)
 	: QObject(parent),
 	  m_beepTimer(nullptr),
 	  m_currentStep(0),
-	  m_beepAvailable(false)
+	  m_beepAvailable(false),
+	  m_beepFile(nullptr)
 {
-	/* 检测蜂鸣器设备是否存在 */
-	QFile beepFile(BEEP_PATH);
-	if (beepFile.exists()) {
-		m_beepAvailable = true;
-		qInfo() << "BeeperControl: Beeper available at" << BEEP_PATH;
+	/*
+	 * 检测并打开蜂鸣器设备
+	 * 保持文件打开以避免每次beep时重复open/close（嵌入式ARM上sysfs操作较慢）
+	 */
+	m_beepFile = new QFile(BEEP_PATH);
+	if (m_beepFile->exists()) {
+		if (m_beepFile->open(QIODevice::WriteOnly)) {
+			m_beepAvailable = true;
+			qInfo() << "BeeperControl: Beeper available at" << BEEP_PATH;
+		} else {
+			qWarning() << "BeeperControl: Cannot open" << BEEP_PATH << ":" << m_beepFile->errorString();
+			delete m_beepFile;
+			m_beepFile = nullptr;
+		}
 	} else {
 		qWarning() << "BeeperControl: Beeper not found at" << BEEP_PATH;
 		qWarning() << "  Falling back to log output only";
+		delete m_beepFile;
+		m_beepFile = nullptr;
 	}
 
 	/* 创建单次触发定时器（用于蜂鸣时序控制） */
@@ -44,6 +56,13 @@ BeeperControl::~BeeperControl()
 
 	if (m_beepTimer) {
 		m_beepTimer->stop();
+	}
+
+	/* 关闭并释放sysfs文件句柄 */
+	if (m_beepFile) {
+		m_beepFile->close();
+		delete m_beepFile;
+		m_beepFile = nullptr;
 	}
 }
 
@@ -116,13 +135,8 @@ void BeeperControl::nextStep()
 
 	m_currentStep++;
 
-	/* 安排下一步 */
-	if (m_currentStep < m_sequence.size()) {
-		m_beepTimer->start(durationMs);
-	} else {
-		/* 最后一步：开启后延迟关闭 */
-		m_beepTimer->start(durationMs);
-	}
+	/* 安排下一步（无论是否最后一步，都启动定时器） */
+	m_beepTimer->start(durationMs);
 }
 
 void BeeperControl::beepOnce(int durationMs)
@@ -134,23 +148,21 @@ void BeeperControl::beepOnce(int durationMs)
 
 void BeeperControl::beepOn()
 {
-	if (m_beepAvailable) {
-		QFile file(BEEP_PATH);
-		if (file.open(QIODevice::WriteOnly)) {
-			file.write("1");
-			file.close();
-		}
+	if (m_beepAvailable && m_beepFile) {
+		/* seek到文件开头，写入"1"开启蜂鸣器 */
+		m_beepFile->seek(0);
+		m_beepFile->write("1");
+		m_beepFile->flush();
 	}
 	qInfo() << "BeeperControl: BEEP ON";
 }
 
 void BeeperControl::beepOff()
 {
-	if (m_beepAvailable) {
-		QFile file(BEEP_PATH);
-		if (file.open(QIODevice::WriteOnly)) {
-			file.write("0");
-			file.close();
-		}
+	if (m_beepAvailable && m_beepFile) {
+		/* seek到文件开头，写入"0"关闭蜂鸣器 */
+		m_beepFile->seek(0);
+		m_beepFile->write("0");
+		m_beepFile->flush();
 	}
 }

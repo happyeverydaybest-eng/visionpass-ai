@@ -59,12 +59,13 @@ bool ServoControl::isOpen() const
  * 设置舵机角度
  * 角度范围：0~180度
  * SG90舵机：0度=关闭位置，90度=中间位置，180度=全开位置
+ * 返回值：true=成功，false=失败
  */
-void ServoControl::setAngle(int angle)
+bool ServoControl::setAngle(int angle)
 {
 	if (m_fd < 0) {
 		qWarning() << "ServoControl: Device not opened";
-		return;
+		return false;
 	}
 
 	/* 限制角度范围 */
@@ -78,20 +79,27 @@ void ServoControl::setAngle(int angle)
 	if (::ioctl(m_fd, SERVO_SET_ANGLE, &angle) < 0) {
 		qWarning() << "ServoControl: ioctl SERVO_SET_ANGLE failed:" << strerror(errno);
 		emit deviceError("舵机控制失败");
-		return;
+		return false;
 	}
 
 	qInfo() << "ServoControl: Angle set to" << angle;
+	return true;
 }
 
-void ServoControl::unlock()
+bool ServoControl::unlock()
 {
-	setAngle(90);  /* 90度 = 开锁位置 */
-	emit unlocked();
+	if (setAngle(90)) {  /* 90度 = 开锁位置 */
+		emit unlocked();
+		return true;
+	}
+	return false;
 }
 
-void ServoControl::lock()
+bool ServoControl::lock()
 {
-	setAngle(0);   /* 0度 = 关锁位置 */
-	emit locked();
+	if (setAngle(0)) {   /* 0度 = 关锁位置 */
+		emit locked();
+		return true;
+	}
+	return false;
 }
