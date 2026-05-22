@@ -43,7 +43,7 @@ protected:
 private:
 	RC522User m_rc522;
 	std::atomic<bool> m_running;
-	int m_pollIntervalMs;  /* 轮询间隔 */
+	std::atomic<int> m_pollIntervalMs;  /* I4: 使用原子操作 */
 };
 
 #endif // RFIDTHREAD_H

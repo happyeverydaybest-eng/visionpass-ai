@@ -34,6 +34,7 @@ bool RFIDThread::initDevice()
 
 	if (!m_rc522.init()) {
 		emit deviceError("RC522初始化失败");
+		m_rc522.closeDevice();  /* I2: 释放fd */
 		return false;
 	}
 

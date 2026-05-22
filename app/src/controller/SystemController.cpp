@@ -122,20 +122,21 @@ bool SystemController::initialize()
 
 	/* 初始化RFID线程 */
 	m_rfidThread = new RFIDThread(this);
+	/* I1: 先连接信号，再初始化设备（确保错误信号能被接收） */
+	connect(m_rfidThread, &RFIDThread::cardDetected,
+		this, &SystemController::cardDetected, Qt::QueuedConnection);
+	connect(m_rfidThread, &RFIDThread::unauthorizedCard,
+		this, &SystemController::unauthorizedCard, Qt::QueuedConnection);
+	connect(m_rfidThread, &RFIDThread::deviceError,
+		this, [this](const QString &error) {
+			emit notification(error, ALARM);
+		}, Qt::QueuedConnection);
+
 	if (!m_rfidThread->initDevice()) {
 		qWarning() << "RFIDThread: Failed to initialize RC522";
 		delete m_rfidThread;
 		m_rfidThread = nullptr;
 	} else {
-		/* 连接RFID信号 → Controller转发 → MainWindow */
-		connect(m_rfidThread, &RFIDThread::cardDetected,
-			this, &SystemController::cardDetected, Qt::QueuedConnection);
-		connect(m_rfidThread, &RFIDThread::unauthorizedCard,
-			this, &SystemController::unauthorizedCard, Qt::QueuedConnection);
-		connect(m_rfidThread, &RFIDThread::deviceError,
-			this, [this](const QString &error) {
-				emit notification(error, ALARM);
-			}, Qt::QueuedConnection);
 		qInfo() << "RFIDThread: Ready";
 	}
 

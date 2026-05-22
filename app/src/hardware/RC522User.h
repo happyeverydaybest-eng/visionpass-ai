@@ -86,6 +86,8 @@ private:
 	char request(uint8_t reqCode, uint8_t *tagType);
 	/* 防冲撞（获取UID） */
 	char anticoll(uint8_t *uid);
+	/* CRC计算 */
+	void calculateCRC(uint8_t *data, uint8_t len, uint8_t *crc);
 	/* 选卡 */
 	char select(uint8_t *uid);
 	/* 认证 */

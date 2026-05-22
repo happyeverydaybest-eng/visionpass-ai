@@ -15,19 +15,24 @@
 
 /* RC522寄存器地址 */
 static const uint8_t CommandReg   = 0x01;
+static const uint8_t ComIEnReg    = 0x02;  /* 中断使能寄存器 */
 static const uint8_t ComIrqReg    = 0x04;
 static const uint8_t ErrorReg     = 0x06;
 static const uint8_t Status2Reg   = 0x08;
 static const uint8_t FIFODataReg  = 0x09;
 static const uint8_t FIFOLevelReg = 0x0A;
 static const uint8_t BitFramingReg = 0x0D;
+static const uint8_t CollReg      = 0x0E;
 static const uint8_t ModeReg      = 0x11;
 static const uint8_t TxControlReg = 0x14;
+static const uint8_t TxAutoReg    = 0x15;
+static const uint8_t RxSelReg     = 0x17;
+static const uint8_t RFCfgReg     = 0x26;
+static const uint8_t ControlReg   = 0x0C;
 static const uint8_t TModeReg     = 0x2A;
 static const uint8_t TPrescalerReg = 0x2B;
 static const uint8_t TReloadRegH  = 0x2C;
 static const uint8_t TReloadRegL  = 0x2D;
-static const uint8_t CommandRegVal = 0x01;  /* 同CommandReg */
 
 /* PCD命令 */
 static const uint8_t PCD_IDLE       = 0x00;
@@ -36,6 +41,7 @@ static const uint8_t PCD_RECEIVE    = 0x08;
 static const uint8_t PCD_TRANSMIT   = 0x04;
 static const uint8_t PCD_TRANSCEIVE = 0x0C;
 static const uint8_t PCD_RESETPHASE = 0x0F;
+static const uint8_t PCD_CALCCRC    = 0x03;
 
 /* PICC命令 */
 static const uint8_t PICC_REQIDL    = 0x26;
@@ -144,10 +150,19 @@ bool RC522User::init()
 	writeReg(TModeReg, 0x8D);
 	writeReg(TPrescalerReg, 0x3E);
 	writeReg(TReloadRegH, 0x00);
-	writeReg(TReloadRegL, 0x1F);
+	writeReg(TReloadRegL, 0x1E);  /* 30, 而非0x1F=31 */
+
+	/* 配置TxAutoReg: 100% ASK调制 */
+	writeReg(TxAutoReg, 0x40);
 
 	/* 配置ModeReg */
 	writeReg(ModeReg, 0x3D);
+
+	/* 配置接收灵敏度 */
+	writeReg(RxSelReg, 0x86);
+
+	/* 配置RF增益 */
+	writeReg(RFCfgReg, 0x7F);
 
 	/* 开启天线 */
 	antennaOn();
@@ -175,7 +190,7 @@ char RC522User::communicate(uint8_t command, uint8_t *inData, uint8_t inLen,
 		irqWait = 0x30;
 	}
 
-	writeReg(ComIrqReg, irqWait | 0x80);
+	writeReg(ComIEnReg, irqWait | 0x80);  /* C1: 写入中断使能寄存器 */
 	clearBitMask(ComIrqReg, 0x80);
 	writeReg(CommandReg, PCD_IDLE);
 	setBitMask(FIFOLevelReg, 0x80);
@@ -207,15 +222,15 @@ char RC522User::communicate(uint8_t command, uint8_t *inData, uint8_t inLen,
 	if (i == 0)
 		return MI_ERR;
 
-	/* 错误检查 */
-	if (readReg(::ErrorReg) & 0x1D)
+	/* C2: 错误检查 - 如果有任何错误位被设置则返回错误 */
+	if (readReg(ErrorReg) & 0x1B)
 		return MI_ERR;
 
 	/* 读取接收数据 */
 	uint8_t n = readReg(FIFOLevelReg);
-	lastBits = readReg(0x0C) & 0x07;
+	lastBits = readReg(ControlReg) & 0x07;
 	if (lastBits)
-		outLenBit = n * 8 + lastBits;
+		outLenBit = (n - 1) * 8 + lastBits;  /* I6: 修正位长度计算 */
 	else
 		outLenBit = n * 8;
 
@@ -227,6 +242,10 @@ char RC522User::communicate(uint8_t command, uint8_t *inData, uint8_t inLen,
 	for (i = 0; i < n; i++)
 		outData[i] = readReg(FIFODataReg);
 
+	/* I3: 清理 - 停止定时器并返回空闲状态 */
+	setBitMask(ControlReg, 0x80);
+	writeReg(CommandReg, PCD_IDLE);
+
 	return MI_OK;
 }
 
@@ -236,6 +255,9 @@ char RC522User::request(uint8_t reqCode, uint8_t *tagType)
 {
 	uint8_t buf[2];
 	uint32_t len = 0;
+
+	/* C4: 清除MFCrypto1Active标志 */
+	clearBitMask(Status2Reg, 0x08);
 
 	writeReg(BitFramingReg, 0x07);
 	buf[0] = reqCode;
@@ -253,7 +275,7 @@ char RC522User::anticoll(uint8_t *uid)
 	uint8_t i;
 
 	writeReg(BitFramingReg, 0x00);
-	clearBitMask(0x0E, 0x80);
+	clearBitMask(CollReg, 0x80);
 	buf[0] = PICC_ANTICOLL1;
 	buf[1] = 0x20;
 
@@ -266,7 +288,44 @@ char RC522User::anticoll(uint8_t *uid)
 	if (snr_check != uid[4])
 		return MI_ERR;
 
+	/* I5: 重新使能冲突检测 */
+	setBitMask(CollReg, 0x80);
+
 	return MI_OK;
+}
+
+/* ===== CRC计算 ===== */
+
+void RC522User::calculateCRC(uint8_t *data, uint8_t len, uint8_t *crc)
+{
+	uint8_t i, n;
+
+	/* 清除CRC中断标志 */
+	clearBitMask(ComIrqReg, 0x04);
+
+	/* 复位FIFO指针 */
+	setBitMask(FIFOLevelReg, 0x80);
+
+	/* 写入数据到FIFO */
+	for (i = 0; i < len; i++)
+		writeReg(FIFODataReg, data[i]);
+
+	/* 执行CRC计算命令 */
+	writeReg(CommandReg, PCD_CALCCRC);
+
+	/* 等待计算完成 */
+	i = 255;
+	do {
+		n = readReg(ComIrqReg);
+		i--;
+	} while ((i != 0) && !(n & 0x04));
+
+	/* 读取CRC结果 */
+	crc[0] = readReg(0x22);  /* CRCResultRegL */
+	crc[1] = readReg(0x21);  /* CRCResultRegM */
+
+	/* 恢复空闲状态 */
+	writeReg(CommandReg, PCD_IDLE);
 }
 
 /* ===== 休眠 ===== */
@@ -278,7 +337,11 @@ char RC522User::halt()
 
 	buf[0] = PICC_HALT;
 	buf[1] = 0x00;
-	communicate(PCD_TRANSCEIVE, buf, 2, buf, len);
+
+	/* C5: 计算并添加CRC */
+	calculateCRC(buf, 2, &buf[2]);
+
+	communicate(PCD_TRANSCEIVE, buf, 4, buf, len);
 	return MI_OK;
 }
 
