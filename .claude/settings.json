@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "imx6u": {
+      "command": "npx",
+      "args": ["mcp-ssh-manager"],
+      "env": {
+        "SSH_SERVER_IMX6U_HOST": "192.168.77.69",
+        "SSH_SERVER_IMX6U_PORT": "22",
+        "SSH_SERVER_IMX6U_USERNAME": "root",
+        "SSH_SERVER_IMX6U_PLATFORM": "linux"
+      }
+    }
+  }
+}

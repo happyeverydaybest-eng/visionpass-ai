@@ -120,7 +120,7 @@ bool SystemController::initialize()
 	}
 
 	/* ===== 初始化V4L2摄像头采集线程 ===== */
-	m_captureThread = new V4L2CaptureThread("/dev/video0", this);
+	m_captureThread = new V4L2CaptureThread("/dev/video1", this);  /* OV2640在video1 (CSI) */
 	if (!m_captureThread->openDevice()) {
 		qWarning() << "V4L2: Failed to open camera device";
 		m_captureThread->setParent(nullptr);
@@ -223,9 +223,8 @@ bool SystemController::initialize()
 	if (!m_irSensorMonitor->start()) {
 		qWarning() << "IRSensorMonitor: Failed to start";
 		/* IR传感器不可用不是致命错误 */
-	} else {
-		qInfo() << "IRSensorMonitor: Started";
 	}
+	/* start()内部已打印"IRSensorMonitor: Started" */
 
 	/* ===== 初始化用户数据库 ===== */
 	m_userDatabase = new UserDatabase(this);

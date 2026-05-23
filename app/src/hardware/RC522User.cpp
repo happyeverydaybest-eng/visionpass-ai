@@ -112,6 +112,11 @@ uint8_t RC522User::readReg(uint8_t addr)
 		qWarning() << "RC522: readReg failed for addr 0x" << QString::number(addr, 16);
 		return 0;
 	}
+	/* Debug: 打印读取的寄存器和值 */
+	if (addr == VersionReg) {
+		qDebug() << "RC522: readReg(0x" << QString::number(addr, 16)
+		         << ") = 0x" << QString::number(buf, 16);
+	}
 	return buf;
 }
 
@@ -184,9 +189,19 @@ bool RC522User::init()
 	/* 开启天线 */
 	antennaOn();
 
-	/* 验证初始化：读取VersionReg */
-	uint8_t version = readReg(VersionReg);
-	qInfo() << "RC522: VersionReg = 0x" << QString::number(version, 16);
+	/* 验证初始化：读取VersionReg（多次读取以确认SPI通信正常） */
+	uint8_t version1 = readReg(VersionReg);
+	usleep(10000);  /* 10ms delay between reads */
+	uint8_t version2 = readReg(VersionReg);
+
+	qInfo() << "RC522: VersionReg = 0x" << QString::number(version1, 16)
+	        << "(first read: 0x" << QString::number(version1, 16)
+	        << ", second read: 0x" << QString::number(version2, 16) << ")";
+
+	if (version1 == 0x00 && version2 == 0x00) {
+		qWarning() << "RC522: VersionReg is 0x00, SPI communication may have issues";
+		qWarning() << "RC522: Please check hardware connections and SPI wiring";
+	}
 
 	return true;
 }

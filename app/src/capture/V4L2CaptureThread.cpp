@@ -63,7 +63,7 @@ bool V4L2CaptureThread::openDevice()
 	fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;        /* 视频捕获模式 */
 	fmt.fmt.pix.width = m_width;                     /* 宽度640 */
 	fmt.fmt.pix.height = m_height;                   /* 高度480 */
-	fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB565;  /* RGB565格式 */
+	fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_UYVY;   /* UYVY格式（OV2640默认） */
 	fmt.fmt.pix.field = V4L2_FIELD_NONE;            /* 逐行扫描 */
 
 	if (ioctl(m_fd, VIDIOC_S_FMT, &fmt) < 0) {
@@ -278,25 +278,53 @@ void V4L2CaptureThread::run()
 		/*
 		 * 构造QImage
 		 * =============
-		 * 摄像头数据格式：RGB565（16位/像素）
-		 * Qt格式：QImage::Format_RGB16
+		 * 摄像头数据格式：UYVY（每2个像素4字节）
+		 * UYVY: U0 Y0 V0 Y1 U2 Y2 V2 Y3 ...
+		 * 每4字节 = 2个像素（Y0Y1 共享 U0V0）
 		 *
-		 * bytesPerLine = 每行像素数 × 每像素字节数
-		 * RGB565 = 2字节/像素，所以640像素 = 1280字节/行
-		 * 注意：V4L2驱动可能有padding，但OV2640通常没有
+		 * 需要转换为 RGB888 格式
 		 */
 		unsigned char *frameData =
 			static_cast<unsigned char *>(m_buffers[buf.index].start);
 
-		QImage frame(frameData, m_width, m_height,
-			     m_width * 2,  /* bytesPerLine: 640 * 2 = 1280 */
-			     QImage::Format_RGB16);
+		QImage safeFrame(m_width, m_height, QImage::Format_RGB888);
 
-		/*
-		 * 深拷贝：V4L2缓冲区会被下一帧覆盖，
-		 * 所以必须在emit前拷贝一份
-		 */
-		QImage safeFrame = frame.copy();
+		/* UYVY 转 RGB888 */
+		for (int row = 0; row < m_height; row++) {
+			unsigned char *uyvy_row = frameData + row * m_width * 2;
+			unsigned char *rgb_row = safeFrame.scanLine(row);
+
+			for (int col = 0; col < m_width; col += 2) {
+				/* UYVY格式：U0 Y0 V0 Y1 */
+				int u = uyvy_row[col * 2];
+				int y0 = uyvy_row[col * 2 + 1];
+				int v = uyvy_row[col * 2 + 2];
+				int y1 = uyvy_row[col * 2 + 3];
+
+				/* YUV 转 RGB */
+				int c0 = y0 - 16;
+				int c1 = y1 - 16;
+				int d = u - 128;
+				int e = v - 128;
+
+				int r0 = (298 * c0 + 409 * e + 128) >> 8;
+				int g0 = (298 * c0 - 100 * d - 208 * e + 128) >> 8;
+				int b0 = (298 * c0 + 516 * d + 128) >> 8;
+
+				int r1 = (298 * c1 + 409 * e + 128) >> 8;
+				int g1 = (298 * c1 - 100 * d - 208 * e + 128) >> 8;
+				int b1 = (298 * c1 + 516 * d + 128) >> 8;
+
+				/* 限制范围 0-255 */
+				rgb_row[col * 3] = qBound(0, r0, 255);
+				rgb_row[col * 3 + 1] = qBound(0, g0, 255);
+				rgb_row[col * 3 + 2] = qBound(0, b0, 255);
+
+				rgb_row[col * 3 + 3] = qBound(0, r1, 255);
+				rgb_row[col * 3 + 4] = qBound(0, g1, 255);
+				rgb_row[col * 3 + 5] = qBound(0, b1, 255);
+			}
+		}
 
 		/* 发射信号（Qt会自动跨线程队列） */
 		emit frameReady(safeFrame);

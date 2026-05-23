@@ -9,10 +9,12 @@
 
 #include "IRSensorMonitor.h"
 #include <QDebug>
+#include <fcntl.h>
+#include <unistd.h>
 
 IRSensorMonitor::IRSensorMonitor(QObject *parent)
 	: QObject(parent),
-	  m_device(nullptr),
+	  m_fd(-1),
 	  m_pollTimer(nullptr),
 	  m_lastState(false),
 	  m_monitoring(false)
@@ -25,10 +27,6 @@ IRSensorMonitor::IRSensorMonitor(QObject *parent)
 IRSensorMonitor::~IRSensorMonitor()
 {
 	stop();
-
-	/* 释放设备文件对象（m_pollTimer由Qt父对象自动管理，无需手动删除） */
-	delete m_device;
-	m_device = nullptr;
 }
 
 /*
@@ -42,21 +40,25 @@ bool IRSensorMonitor::start()
 	if (m_monitoring)
 		return true;
 
-	/* 打开设备文件 */
-	m_device = new QFile("/dev/ir_sensor");
-	if (!m_device->open(QIODevice::ReadOnly | QIODevice::Text)) {
-		qWarning() << "IRSensorMonitor: Cannot open /dev/ir_sensor:" << m_device->errorString();
+	/* 打开设备文件（字符设备，不需要seek） */
+	m_fd = ::open("/dev/ir_sensor", O_RDONLY);
+	if (m_fd < 0) {
+		qWarning() << "IRSensorMonitor: Cannot open /dev/ir_sensor:" << strerror(errno);
 		emit deviceError("无法打开IR传感器设备");
-		delete m_device;
-		m_device = nullptr;
 		return false;
 	}
 
 	/* 读取初始状态（避免首次poll时误触发信号） */
-	m_device->seek(0);
-	QByteArray data = m_device->readLine().trimmed();
-	m_lastState = (data == "1");
-	qInfo() << "IRSensorMonitor: Initial state =" << (m_lastState ? "person detected" : "no person");
+	char buf[8];
+	ssize_t n = ::read(m_fd, buf, sizeof(buf) - 1);
+	if (n > 0) {
+		buf[n] = '\0';
+		m_lastState = (buf[0] == '1');
+		qInfo() << "IRSensorMonitor: Initial state =" << (m_lastState ? "person detected" : "no person");
+	} else {
+		qWarning() << "IRSensorMonitor: Failed to read initial state";
+		m_lastState = false;
+	}
 
 	/* 启动轮询定时器 */
 	m_pollTimer->start(500);  /* 每500ms轮询一次 */
@@ -72,13 +74,10 @@ void IRSensorMonitor::stop()
 		m_pollTimer->stop();
 	}
 
-	if (m_device && m_device->isOpen()) {
-		m_device->close();
+	if (m_fd >= 0) {
+		::close(m_fd);
+		m_fd = -1;
 	}
-
-	/* 释放设备文件对象，防止内存泄漏 */
-	delete m_device;
-	m_device = nullptr;
 
 	m_monitoring = false;
 }
@@ -99,15 +98,20 @@ bool IRSensorMonitor::isPersonDetected() const
  */
 void IRSensorMonitor::poll()
 {
-	if (!m_device || !m_device->isOpen())
+	if (m_fd < 0)
 		return;
 
-	/* seek(0)回到文件开头，因为字符设备的read每次从当前位置读取 */
-	m_device->seek(0);
-	QByteArray data = m_device->readLine().trimmed();
+	/* 读取字符设备（每次从头读取，字符设备会自动重置位置） */
+	char buf[8];
+	ssize_t n = ::read(m_fd, buf, sizeof(buf) - 1);
+	if (n <= 0) {
+		qWarning() << "IRSensorMonitor: Failed to read from device";
+		return;
+	}
+	buf[n] = '\0';
 
-	/* 解析状态 */
-	bool currentState = (data == "1");
+	/* 解析状态（字符设备返回 "0\n" 或 "1\n"） */
+	bool currentState = (buf[0] == '1');
 
 	/* 只在状态变化时发射信号 */
 	if (currentState != m_lastState) {

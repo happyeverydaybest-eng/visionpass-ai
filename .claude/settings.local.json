@@ -9,7 +9,9 @@
       "Read(//home/viper/linux/IMX6ULL/Board_Drivers/**)",
       "Read(//usr/local/arm/**)",
       "Bash(readelf -h /tmp/allocator.cpp.o)",
-      "Bash(arm-linux-gnueabihf-readelf -h /tmp/allocator.cpp.o)"
+      "Bash(arm-linux-gnueabihf-readelf -h /tmp/allocator.cpp.o)",
+      "Bash(ssh *)",
+      "Bash(scp *)"
     ]
   }
 }

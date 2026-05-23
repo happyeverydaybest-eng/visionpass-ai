@@ -7,6 +7,10 @@
 KERNELDIR := /home/viper/linux/IMX6ULL/linux/alientek_linux_2026_4_26
 CURRENT_PATH := $(shell pwd)
 
+# 交叉编译工具链配置
+export ARCH := arm
+export CROSS_COMPILE := arm-linux-gnueabihf-
+
 obj-m := ir_sensor.o
 
 build: kernel_modules

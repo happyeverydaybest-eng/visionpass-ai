@@ -13,7 +13,6 @@
 #define IRSENSORMONITOR_H
 
 #include <QObject>
-#include <QFile>
 #include <QTimer>
 
 class IRSensorMonitor : public QObject
@@ -44,7 +43,7 @@ private slots:
 	void poll();
 
 private:
-	QFile *m_device;       /* /dev/ir_sensor 设备文件 */
+	int m_fd;              /* /dev/ir_sensor 文件描述符 */
 	QTimer *m_pollTimer;   /* 轮询定时器 */
 	bool m_lastState;      /* 上一次的传感器状态 */
 	bool m_monitoring;     /* 是否正在监控 */
