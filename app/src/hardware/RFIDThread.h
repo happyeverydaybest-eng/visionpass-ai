@@ -12,12 +12,20 @@
 #include <atomic>
 #include "src/hardware/RC522User.h"
 
+/* 前向声明 */
+class UserDatabase;
+
 class RFIDThread : public QThread
 {
 	Q_OBJECT
 
 public:
-	explicit RFIDThread(QObject *parent = nullptr);
+	/*
+	 * 构造函数
+	 * 参数 database：用户数据库指针，用于查询卡片UID对应的用户信息
+	 *             如果为nullptr，则所有卡片都被视为未授权
+	 */
+	explicit RFIDThread(UserDatabase *database = nullptr, QObject *parent = nullptr);
 	~RFIDThread();
 
 	/* 初始化RC522设备 */
@@ -42,6 +50,7 @@ protected:
 
 private:
 	RC522User m_rc522;
+	UserDatabase *m_database;
 	std::atomic<bool> m_running;
 	std::atomic<int> m_pollIntervalMs;  /* I4: 使用原子操作 */
 };

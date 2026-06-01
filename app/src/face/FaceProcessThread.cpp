@@ -10,19 +10,23 @@
  */
 
 #include "FaceProcessThread.h"
+#include "src/database/UserDatabase.h"
 #include <QDebug>
 
 FaceProcessThread::FaceProcessThread(FaceDetector *detector,
 				     FaceRecognizer *recognizer,
+				     UserDatabase *database,
 				     QObject *parent)
 	: QThread(parent),
 	  m_detector(detector),
 	  m_recognizer(recognizer),
+	  m_database(database),
 	  m_running(false),
 	  m_frameSkip(3),        /* 默认每3帧处理1帧 */
 	  m_frameCounter(0),
 	  m_cooldownMs(3000),    /* 默认3秒冷却 */
-	  m_inCooldown(false)
+	  m_inCooldown(false),
+	  m_dbLoaded(false)
 {
 }
 
@@ -77,6 +81,15 @@ void FaceProcessThread::run()
 
 	qInfo() << "FaceProcessThread: Started, frameSkip=" << m_frameSkip
 		<< "cooldownMs=" << m_cooldownMs;
+
+	/* 每次线程启动时重新加载数据库特征（避免缓存过期） */
+	if (m_database) {
+		m_dbFeatures = m_database->getAllFaceFeatures();
+		m_dbNames = m_database->getAllUserNames();
+		m_dbLoaded = true;
+		qInfo() << "FaceProcessThread: Loaded" << m_dbFeatures.size()
+			<< "face features from database";
+	}
 
 	while (m_running) {
 		QImage frame;
@@ -165,13 +178,9 @@ FaceProcessResult FaceProcessThread::processFrame(const QImage &frame)
 	if (feature.isEmpty())
 		return result;
 
-	/* 步骤3：特征比对（需要数据库） */
-	/* TODO: 从UserDatabase加载已注册用户特征 */
-	QMap<QString, FaceFeature> dbFeatures;
-	QMap<QString, QString> dbNames;
-
-	if (!dbFeatures.isEmpty()) {
-		RecognizeResult recResult = m_recognizer->recognize(feature, dbFeatures, dbNames);
+	/* 步骤3：特征比对（使用已加载的数据库特征） */
+	if (!m_dbFeatures.isEmpty()) {
+		RecognizeResult recResult = m_recognizer->recognize(feature, m_dbFeatures, m_dbNames);
 
 		result.hasFace = true;
 		result.faceRect = maxFace;

@@ -17,14 +17,20 @@
 #include "src/hardware/BeeperControl.h"
 #include "src/database/UserDatabase.h"
 #include "src/voice/VoiceThread.h"
+#include "src/network/MessageClient.h"
 #include <QDebug>
+#include <QFile>
+#include <QProcess>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 SystemController::SystemController(QObject *parent)
 	: QObject(parent),
 	  m_state(IDLE),
 	  m_ready(false),
 	  m_autoLockDelayMs(5000),   /* 5秒后自动关锁 */
-	  m_scanTimeoutMs(10000)     /* 10秒扫描超时 */
+	  m_scanTimeoutMs(10000),    /* 10秒扫描超时 */
+	  m_systemPasswordHash("8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92")  /* 默认密码 "123456" */
 {
 	m_faceDetector = nullptr;
 	m_faceRecognizer = nullptr;
@@ -36,6 +42,7 @@ SystemController::SystemController(QObject *parent)
 	m_beeperControl = nullptr;
 	m_irSensorMonitor = nullptr;
 	m_userDatabase = nullptr;
+	m_messageClient = nullptr;
 
 	/* 创建定时器 */
 	m_autoLockTimer = new QTimer(this);
@@ -133,9 +140,24 @@ bool SystemController::initialize()
 		qInfo() << "V4L2: Camera ready";
 	}
 
+	/* ===== 初始化用户数据库（必须在FaceProcessThread之前） ===== */
+	m_userDatabase = new UserDatabase(this);
+	if (!m_userDatabase->open()) {
+		qWarning() << "UserDatabase: Failed to open";
+		/* 数据库不可用不是致命错误（首次运行） */
+	} else {
+		qInfo() << "UserDatabase: Ready";
+	}
+
+	/* ===== 加载系统配置（系统密码） ===== */
+	loadSystemConfig();
+
 	/* ===== 初始化人脸处理线程 ===== */
 	if (m_faceDetector && m_faceRecognizer) {
-		m_faceProcessThread = new FaceProcessThread(m_faceDetector, m_faceRecognizer, this);
+		/* 注册元类型，使 FaceProcessResult 可以通过 QueuedConnection 跨线程传递 */
+		qRegisterMetaType<FaceProcessResult>("FaceProcessResult");
+
+		m_faceProcessThread = new FaceProcessThread(m_faceDetector, m_faceRecognizer, m_userDatabase, this);
 		connect(m_faceProcessThread, &FaceProcessThread::facesDetected,
 			this, &SystemController::facesDetected, Qt::QueuedConnection);
 		connect(m_faceProcessThread, &FaceProcessThread::recognitionResult,
@@ -156,11 +178,13 @@ bool SystemController::initialize()
 	}
 
 	/* ===== 初始化RFID线程 ===== */
-	m_rfidThread = new RFIDThread(this);
-	/* 先连接信号，再初始化设备（确保错误信号能被接收） */
+	/* 暂时禁用：RF卡可能有问题，跳过RFID初始化
+	 * 恢复时取消下面的注释即可
+	 */
+#if 0
+	m_rfidThread = new RFIDThread(m_userDatabase, this);
 	connect(m_rfidThread, &RFIDThread::cardDetected,
 		this, [this](const QString &uid, const QString &userName) {
-			/* RFID匹配成功 → 自动开锁 */
 			emit cardDetected(uid, userName);
 			unlockDoor();
 		}, Qt::QueuedConnection);
@@ -179,10 +203,14 @@ bool SystemController::initialize()
 		m_rfidThread->setParent(nullptr);
 		delete m_rfidThread;
 		m_rfidThread = nullptr;
-		allOk = false;
+		/* RFID不可用不是致命错误，继续运行 */
 	} else {
-		qInfo() << "RFIDThread: Ready";
+		qInfo() << "RFIDThread: Ready, starting continuous polling";
+		/* 初始化后立即开始轮询，不需要等按钮 */
+		m_rfidThread->start();
 	}
+#endif
+	qInfo() << "RFIDThread: Temporarily disabled (RF card issue)";
 
 	/* ===== 初始化舵机控制 ===== */
 	m_servoControl = new ServoControl(this);
@@ -226,15 +254,6 @@ bool SystemController::initialize()
 	}
 	/* start()内部已打印"IRSensorMonitor: Started" */
 
-	/* ===== 初始化用户数据库 ===== */
-	m_userDatabase = new UserDatabase(this);
-	if (!m_userDatabase->open()) {
-		qWarning() << "UserDatabase: Failed to open";
-		/* 数据库不可用不是致命错误（首次运行） */
-	} else {
-		qInfo() << "UserDatabase: Ready";
-	}
-
 	/* ===== 初始化语音识别线程 ===== */
 	m_voiceThread = new VoiceThread(this);
 	connect(m_voiceThread, &VoiceThread::voiceCommandDetected,
@@ -249,6 +268,73 @@ bool SystemController::initialize()
 			emit notification(error, ALARM);
 		}, Qt::QueuedConnection);
 	qInfo() << "VoiceThread: Ready (DTW placeholder)";
+
+	/* ===== 初始化消息客户端（TCP连接Ubuntu管理程序） ===== */
+	m_messageClient = new MessageClient(this);
+	connect(m_messageClient, &MessageClient::messageReceived,
+		this, [this](const QString &text, const QString &sender) {
+			/* 保存到消息历史（限制最多100条） */
+			m_messageHistory.append(QString("[管理端] %1").arg(text));
+			while (m_messageHistory.size() > 100)
+				m_messageHistory.removeFirst();
+			emit messageReceived(text, sender);
+			emit notification("收到消息: " + text, IDLE);
+		}, Qt::QueuedConnection);
+	connect(m_messageClient, &MessageClient::voiceMessageReceived,
+		this, [this](const QByteArray &pcmData, int duration, const QString &sender) {
+			m_messageHistory.append(QString("[管理端] [语音 %1秒]").arg(duration));
+			while (m_messageHistory.size() > 100)
+				m_messageHistory.removeFirst();
+			emit voiceMessageReceived(pcmData, duration, sender);
+			emit notification(QString("收到语音消息 (%1秒)，播放中...").arg(duration), IDLE);
+
+			/* 自动播放语音消息 */
+			QFile tmpFile("/tmp/vp_play.raw");
+			if (tmpFile.open(QIODevice::WriteOnly)) {
+				tmpFile.write(pcmData);
+				tmpFile.close();
+				qInfo() << "Auto-playing voice message," << pcmData.size() << "bytes";
+				QProcess playProc;
+				playProc.start("aplay",
+					QStringList() << "-f" << "S16_LE" << "-r" << "16000"
+						      << "-c" << "1" << "-t" << "raw"
+						      << "/tmp/vp_play.raw");
+				playProc.waitForFinished(-1);
+			}
+		}, Qt::QueuedConnection);
+	connect(m_messageClient, &MessageClient::connectionStateChanged,
+		this, &SystemController::messageConnectionChanged, Qt::QueuedConnection);
+	connect(m_messageClient, &MessageClient::connectionError,
+		this, [this](const QString &error) {
+			qWarning() << "MessageClient:" << error;
+		}, Qt::QueuedConnection);
+
+	/* 从配置文件读取管理程序IP，然后连接 */
+	{
+		QFile cfgFile("/opt/visionpass/config/system.json");
+		if (cfgFile.open(QIODevice::ReadOnly)) {
+			QJsonDocument doc = QJsonDocument::fromJson(cfgFile.readAll());
+			cfgFile.close();
+			if (doc.isObject()) {
+				QJsonObject json = doc.object();
+				QString ip = json["manager_ip"].toString();
+				int port = json["manager_port"].toInt(9500);
+				if (!ip.isEmpty()) {
+					/* 有固定IP配置，直接连接 */
+					m_messageClient->connectToServer(ip, port);
+					qInfo() << "MessageClient: Connecting to" << ip << ":" << port;
+				} else {
+					/* 没有配置IP，启动UDP自动发现 */
+					m_messageClient->startDiscovery(9501, port);
+					qInfo() << "MessageClient: No manager_ip, starting auto-discovery";
+				}
+			}
+		} else {
+			/* 没有配置文件，启动UDP自动发现 */
+			m_messageClient->startDiscovery(9501, 9500);
+			qInfo() << "MessageClient: No config file, starting auto-discovery";
+		}
+	}
 
 	m_ready = allOk;
 	if (allOk) {
@@ -355,6 +441,14 @@ void SystemController::startCardReading()
 	if (m_state != IDLE)
 		return;
 
+	/* 暂时禁用：RF卡可能有问题，提示用户
+	 * 恢复时删除此段，取消下面 #if 0 ... #endif 的注释
+	 */
+	emit notification("刷卡功能暂时禁用（RF卡问题）", ALARM);
+	qInfo() << "Card reading disabled (RF card issue)";
+	return;
+
+#if 0
 	if (m_rfidThread && m_rfidThread->isRunning()) {
 		qWarning() << "RFID reading already running";
 		return;
@@ -371,6 +465,7 @@ void SystemController::startCardReading()
 	}
 
 	qInfo() << "Card reading started";
+#endif
 }
 
 void SystemController::stopCardReading()
@@ -380,14 +475,9 @@ void SystemController::stopCardReading()
 
 	m_scanTimeoutTimer->stop();
 
-	if (m_rfidThread && m_rfidThread->isRunning()) {
-		m_rfidThread->stopPolling();
-		m_rfidThread->wait(5000);
-		qInfo() << "RFIDThread: Stopped";
-	}
-
+	/* 不停止线程，保持持续轮询 */
 	setState(IDLE);
-	qInfo() << "Card reading stopped";
+	qInfo() << "Card reading stopped (thread still polling)";
 }
 
 /*
@@ -434,33 +524,44 @@ void SystemController::stopAllActiveScanning()
 	}
 }
 
-void SystemController::verifyPassword(const QString &password)
+/*
+ * 加载系统配置
+ *
+ * 从/opt/visionpass/config/system.json读取系统密码哈希。
+ * 如果配置文件不存在或格式错误，使用默认密码"123456"的哈希。
+ */
+bool SystemController::loadSystemConfig()
 {
-	if (!m_userDatabase || !m_userDatabase->isOpen()) {
-		qWarning() << "UserDatabase not available";
-		emit notification("密码验证失败：数据库不可用", ALARM);
-		setState(IDLE);
-		return;
+	QString configPath = "/opt/visionpass/config/system.json";
+	QFile file(configPath);
+
+	if (!file.exists()) {
+		qInfo() << "System config not found at" << configPath
+			<< ", using default password (123456)";
+		return false;
 	}
 
-	/* 计算输入密码的SHA-256哈希 */
-	QString hash = UserDatabase::hashPassword(password);
-
-	/*
-	 * 使用优化的SQL查询直接匹配密码哈希
-	 * 只查询id, name, password_hash字段，不加载人脸特征BLOB（节省~500ms）
-	 */
-	UserInfo user = m_userDatabase->findUserByPasswordHash(hash);
-
-	if (!user.id.isEmpty()) {
-		emit notification(QString("欢迎, %1!").arg(user.name), UNLOCKED);
-		unlockDoor();
-	} else {
-		emit notification("密码错误", ALARM);
-		if (m_beeperControl) m_beeperControl->beepError();
+	if (!file.open(QIODevice::ReadOnly)) {
+		qWarning() << "Cannot read system config:" << configPath;
+		return false;
 	}
 
-	setState(IDLE);
+	QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+	file.close();
+
+	if (doc.isObject()) {
+		QJsonObject json = doc.object();
+		QString hash = json["password_hash"].toString();
+
+		if (!hash.isEmpty()) {
+			m_systemPasswordHash = hash;
+			qInfo() << "System password loaded from config";
+			return true;
+		}
+	}
+
+	qWarning() << "Invalid system config format, using default password";
+	return false;
 }
 
 void SystemController::startVoiceRecognition()
@@ -496,10 +597,57 @@ void SystemController::stopVoiceRecognition()
 	qInfo() << "Voice recognition stopped";
 }
 
-void SystemController::startPasswordInput()
+void SystemController::submitPassword(const QString &password)
 {
-	setState(PASSWORD_INPUT);
-	qInfo() << "Password input started";
+	qInfo() << "Password submitted, length=" << password.length();
+
+	/* 计算输入密码的SHA-256哈希，与系统密码哈希比对 */
+	QString inputHash = UserDatabase::hashPassword(password);
+
+	if (inputHash == m_systemPasswordHash) {
+		qInfo() << "Password correct, unlocking door";
+		unlockDoor();
+	} else {
+		qWarning() << "Password incorrect";
+		emit notification("密码错误", ALARM);
+
+		/* 密码错误后返回IDLE状态 */
+		setState(IDLE);
+	}
+}
+
+void SystemController::startFaceRegistration(const QString &userId)
+{
+	qInfo() << "Face registration started for user:" << userId;
+
+	/*
+	 * 人脸注册流程：
+	 * 1. 启动摄像头采集
+	 * 2. 检测人脸并提取特征
+	 * 3. 保存特征到数据库
+	 * 4. 注册完成后停止采集
+	 *
+	 * 简化实现：启动人脸扫描，检测到人脸后保存特征
+	 */
+	if (!m_ready) {
+		emit notification("系统未就绪", ALARM);
+		return;
+	}
+
+	/* 启动人脸扫描（会打开摄像头） */
+	startFaceRecognition();
+
+	/* 发送通知提示用户 */
+	emit notification(QString("正在为用户 %1 注册人脸，请正对摄像头").arg(userId), FACE_SCANNING);
+
+	/*
+	 * TODO: 完整实现需要在FaceProcessThread中添加注册模式
+	 * 检测到人脸后：
+	 *   1. 提取特征
+	 *   2. 保存到数据库（m_userDatabase->saveFaceFeature(userId, feature)）
+	 *   3. 发送注册成功通知
+	 *   4. 停止扫描
+	 */
 }
 
 void SystemController::unlockDoor()
@@ -549,4 +697,38 @@ void SystemController::lockDoor()
 	}
 
 	qInfo() << "Door locked";
+}
+
+void SystemController::sendMessage(const QString &text)
+{
+	if (m_messageClient && m_messageClient->isConnected()) {
+		m_messageClient->sendMessage(text);
+		/* 保存到消息历史（限制最多100条） */
+		m_messageHistory.append(QString("[我] %1").arg(text));
+		while (m_messageHistory.size() > 100)
+			m_messageHistory.removeFirst();
+		qInfo() << "Message sent:" << text;
+	} else {
+		qWarning() << "Cannot send message: not connected";
+		emit notification("未连接到管理程序", ALARM);
+	}
+}
+
+void SystemController::sendVoiceMessage(const QByteArray &pcmData, int duration)
+{
+	if (m_messageClient && m_messageClient->isConnected()) {
+		m_messageClient->sendVoiceMessage(pcmData, duration);
+		m_messageHistory.append(QString("[我] [语音 %1秒]").arg(duration));
+		while (m_messageHistory.size() > 100)
+			m_messageHistory.removeFirst();
+		qInfo() << "Voice message sent:" << duration << "s";
+	} else {
+		qWarning() << "Cannot send voice: not connected";
+		emit notification("未连接到管理程序", ALARM);
+	}
+}
+
+QStringList SystemController::messageHistory() const
+{
+	return m_messageHistory;
 }

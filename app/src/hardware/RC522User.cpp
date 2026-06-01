@@ -30,6 +30,7 @@ static const uint8_t FIFOLevelReg  = 0x0A;
 static const uint8_t BitFramingReg = 0x0D;
 static const uint8_t CollReg       = 0x0E;
 static const uint8_t ModeReg       = 0x11;
+static const uint8_t RxModeReg     = 0x13;  /* 接收模式寄存器 */
 static const uint8_t TxControlReg  = 0x14;
 static const uint8_t TxAutoReg     = 0x15;
 static const uint8_t RxSelReg      = 0x17;
@@ -129,18 +130,23 @@ void RC522User::writeReg(uint8_t addr, uint8_t val)
 }
 
 /*
- * setBitMask/clearBitMask优化：
- * 使用RC522专用的Set/Clear寄存器（地址偏移+0x40/+0x80）
- * 原子操作，无需read-modify-write，每次调用节省1次SPI读取
+ * setBitMask/clearBitMask实现：
+ * 使用read-modify-write方式（与rc522_test.c一致）
+ *
+ * 注意：不能使用RC522硬件Set/Clear寄存器（地址偏移+0x40/+0x80），
+ * 因为内核驱动的SPI地址编码 (reg << 1) & 0x7E 只有6位地址空间，
+ * 偏移后的地址会被映射回原地址，导致写入错误的数据。
  */
 void RC522User::setBitMask(uint8_t reg, uint8_t mask)
 {
-	writeReg(reg + 0x40, mask);  /* Set寄存器：原子置位 */
+	uint8_t val = readReg(reg);
+	writeReg(reg, val | mask);
 }
 
 void RC522User::clearBitMask(uint8_t reg, uint8_t mask)
 {
-	writeReg(reg + 0x80, mask);  /* Clear寄存器：原子清位 */
+	uint8_t val = readReg(reg);
+	writeReg(reg, val & (~mask));
 }
 
 void RC522User::antennaOn()
@@ -166,43 +172,35 @@ bool RC522User::init()
 	writeReg(CommandReg, PCD_RESETPHASE);
 	usleep(50000);  /* 50ms */
 
-	/* 配置定时器：TAuto=1, TPrescaleExt=1, TGating=00, TReload=01 */
+	/* 配置ISO14443-A模式（与诊断工具一致） */
+	writeReg(ModeReg, 0x3D);
+	writeReg(RxModeReg, 0x00);      /* 初始化接收模式（重要！） */
+
+	/* 配置定时器 */
 	writeReg(TModeReg, 0x8D);
-	/* 预分频器值：0x3E (62)，与TModeReg配合得到40kHz时钟 */
 	writeReg(TPrescalerReg, 0x3E);
 	writeReg(TReloadRegH, 0x00);
-	/* 定时器重载值：30 → ~4.8ms超时（参考值，可根据实际调整） */
-	writeReg(TReloadRegL, 0x1E);
+	writeReg(TReloadRegL, 0x1F);
 
-	/* TxAutoReg: Force100ASK=1 → 100% ASK调制（必须用于Mifare卡） */
-	writeReg(TxAutoReg, 0x40);
+	/* 天线和RF配置 */
+	writeReg(TxControlReg, 0x03);   /* 直接开启天线TX1+TX2 */
+	writeReg(TxAutoReg, 0x40);      /* 100% ASK调制（Mifare必须） */
+	writeReg(RxSelReg, 0x86);       /* 接收灵敏度 */
+	writeReg(RFCfgReg, 0x7F);       /* 最大增益48dB */
 
-	/* ModeReg: MSBFirst=0, TR=01, CRCPreset=111101=0x3D */
-	writeReg(ModeReg, 0x3D);
+	/* 验证初始化结果 */
+	qInfo() << "RC522: Initialization complete";
+	qInfo() << "  ModeReg = 0x" << QString::number(readReg(ModeReg), 16);
+	qInfo() << "  TxControlReg = 0x" << QString::number(readReg(TxControlReg), 16);
+	qInfo() << "  VersionReg = 0x" << QString::number(readReg(VersionReg), 16);
 
-	/* RxSelReg: RxWait=0x06, UartSelRx=0 */
-	writeReg(RxSelReg, 0x86);
-
-	/* RFCfgReg: RxGain=111 (最大增益48dB) */
-	writeReg(RFCfgReg, 0x7F);
-
-	/* 开启天线 */
-	antennaOn();
-
-	/* 验证初始化：读取VersionReg（多次读取以确认SPI通信正常） */
-	uint8_t version1 = readReg(VersionReg);
-	usleep(10000);  /* 10ms delay between reads */
-	uint8_t version2 = readReg(VersionReg);
-
-	qInfo() << "RC522: VersionReg = 0x" << QString::number(version1, 16)
-	        << "(first read: 0x" << QString::number(version1, 16)
-	        << ", second read: 0x" << QString::number(version2, 16) << ")";
-
-	if (version1 == 0x00 && version2 == 0x00) {
-		qWarning() << "RC522: VersionReg is 0x00, SPI communication may have issues";
-		qWarning() << "RC522: Please check hardware connections and SPI wiring";
+	uint8_t txCtrl = readReg(TxControlReg);
+	if (!(txCtrl & 0x03)) {
+		qWarning() << "RC522: Antenna not enabled after init!";
+		return false;
 	}
 
+	qInfo() << "RC522: Antenna enabled, ready";
 	return true;
 }
 
@@ -218,11 +216,7 @@ char RC522User::communicate(uint8_t command, uint8_t *inData, uint8_t inLen,
 	uint32_t i = 0;
 
 	/*
-	 * 根据命令类型设置中断使能和等待标志：
-	 * PCD_AUTHENT:  等待IdleIRq (bit4) + ErrIRq (bit1)
-	 * PCD_TRANSCEIVE: 等待TxIRq+RxIRq (bits 4,5) + IdleIRq (bit4)
-	 *                 + ErrIRq (bit1) + TimerIRq (bit0) + LoAlertIRq (bit2)
-	 * 0x77 = 01110111b: TxIErr+RxIErr+IdleIRqEn+LoAlertIErr+ErrIErr+TimerIErr
+	 * 根据命令类型设置中断使能和等待标志
 	 */
 	switch (command) {
 	case PCD_AUTHENT:
@@ -239,8 +233,8 @@ char RC522User::communicate(uint8_t command, uint8_t *inData, uint8_t inLen,
 		break;
 	}
 
-	/* IRQInv=1 → 使能中断请求；同时设置irqEn指定的中断源 */
-	writeReg(ComIEnReg, irqEn | 0x80);
+	/* 设置中断使能 */
+	writeReg(ComIEnReg, irqEn | 0x80);  /* IRQInv=1 */
 	/* 清除所有中断标志 */
 	clearBitMask(ComIrqReg, 0x80);
 	/* 取消当前命令 */
@@ -253,23 +247,31 @@ char RC522User::communicate(uint8_t command, uint8_t *inData, uint8_t inLen,
 		writeReg(FIFODataReg, inData[i]);
 
 	/*
-	 * 执行命令：
-	 * 注意：不要在这里覆盖BitFramingReg，调用者已根据协议设置正确值
-	 * （例如request设置0x07表示7位有效，anticoll设置0x00表示8位有效）
+	 * 设置BitFramingReg：
+	 * - 短帧命令（如REQA/REQB的7位帧）设为0x07
+	 * - 普通字节命令（如防冲撞）设为0x00
+	 * 与rc522_test一致：统一在通信函数内设置
 	 */
+	if (inLen == 1) {
+		writeReg(BitFramingReg, 0x07);  /* 7位有效（短帧） */
+	} else {
+		writeReg(BitFramingReg, 0x00);  /* 8位有效（标准帧） */
+	}
+
+	/* 执行命令 */
 	writeReg(CommandReg, command);
 
-	/* TRANSCEIVE命令需要手动触发发送（置StartSend位） */
+	/* TRANSCEIVE命令需要手动触发发送 */
 	if (command == PCD_TRANSCEIVE)
 		setBitMask(BitFramingReg, 0x80);
 
-	/* 等待命令完成（轮询ComIrqReg） */
+	/* 等待命令完成 */
 	i = 2000;
 	do {
 		irq = readReg(ComIrqReg);
-		if (irq & 0x01)       /* 定时器超时IRQ */
+		if (irq & 0x01)       /* 定时器超时 */
 			break;
-		if (irq & irqWait)    /* 等待的IRQ已发生 */
+		if (irq & irqWait)    /* 等待的IRQ */
 			break;
 		usleep(100);
 	} while (--i);
@@ -280,19 +282,25 @@ char RC522User::communicate(uint8_t command, uint8_t *inData, uint8_t inLen,
 	if (i == 0)
 		return MI_ERR;
 
-	/* 错误检查：检查ProtocolErr, ParityErr, BufferOvfl, CollErr */
-	if (readReg(ErrorReg) & 0x1B)
+	/* 错误检查 */
+	if (readReg(ErrorReg) & 0x1D)
 		return MI_ERR;
 
 	/* 读取接收数据 */
 	uint8_t n = readReg(FIFOLevelReg);
 	lastBits = readReg(ControlReg) & 0x07;
+
+	/* 调试日志：始终显示FIFO状态 */
+	qDebug() << "RC522 communicate: FIFO=" << n
+	         << "lastBits=" << lastBits
+	         << "ErrorReg=" << QString::number(readReg(ErrorReg), 16);
+
 	if (lastBits)
 		outLenBit = (n - 1) * 8 + lastBits;
 	else
 		outLenBit = n * 8;
 
-	/* 缓冲区溢出保护：限制读取字节数不超过调用者缓冲区大小 */
+	/* 缓冲区溢出保护 */
 	uint8_t maxRead = (n > 18) ? 18 : n;
 	if (maxRead > outBufSize)
 		maxRead = outBufSize;
@@ -300,7 +308,7 @@ char RC522User::communicate(uint8_t command, uint8_t *inData, uint8_t inLen,
 	for (i = 0; i < maxRead; i++)
 		outData[i] = readReg(FIFODataReg);
 
-	/* 清理：停止定时器并返回空闲状态 */
+	/* 清理：停止定时器，回到空闲状态 */
 	setBitMask(ControlReg, 0x80);
 	writeReg(CommandReg, PCD_IDLE);
 
@@ -314,11 +322,10 @@ char RC522User::request(uint8_t reqCode, uint8_t *tagType)
 	uint8_t buf[2];
 	uint32_t len = 0;
 
-	/* 清除MFCrypto1Active标志（如果之前认证过） */
+	/* 清除MFCrypto1Active标志 */
 	clearBitMask(Status2Reg, 0x08);
 
-	/* BitFramingReg=0x07: 最后字节7位有效（REQ命令规范） */
-	writeReg(BitFramingReg, 0x07);
+	/* BitFramingReg由communicate()根据inLen自动设置（1字节=0x07短帧） */
 	buf[0] = reqCode;
 
 	return communicate(PCD_TRANSCEIVE, buf, 1, tagType, 2, len);
@@ -333,20 +340,30 @@ char RC522User::anticoll(uint8_t *uid)
 	uint32_t len = 0;
 	uint8_t i;
 
-	/* BitFramingReg=0x00: 所有字节8位有效（防冲突命令规范） */
-	writeReg(BitFramingReg, 0x00);
+	/* BitFramingReg由communicate()根据inLen自动设置（2字节=0x00标准帧） */
 	clearBitMask(CollReg, 0x80);
 	buf[0] = PICC_ANTICOLL1;
 	buf[1] = 0x20;
 
-	if (communicate(PCD_TRANSCEIVE, buf, 2, uid, 5, len) != MI_OK)
+	if (communicate(PCD_TRANSCEIVE, buf, 2, uid, 5, len) != MI_OK) {
+		qDebug() << "RC522: Anticoll communicate failed";
 		return MI_ERR;
+	}
+
+	qDebug() << "RC522: Anticoll OK, received" << len << "bits:"
+	         << QString::number(uid[0], 16) << QString::number(uid[1], 16)
+	         << QString::number(uid[2], 16) << QString::number(uid[3], 16)
+	         << QString::number(uid[4], 16);
 
 	/* 校验UID（4字节异或校验） */
 	for (i = 0; i < 4; i++)
 		snr_check ^= uid[i];
-	if (snr_check != uid[4])
+
+	if (snr_check != uid[4]) {
+		qDebug() << "RC522: BCC check failed, expected" << QString::number(snr_check, 16)
+		         << "got" << QString::number(uid[4], 16);
 		return MI_ERR;
+	}
 
 	/* 重新使能冲突检测 */
 	setBitMask(CollReg, 0x80);
@@ -417,21 +434,42 @@ QString RC522User::detectCard()
 	if (m_fd < 0)
 		return uidStr;
 
+	/* 确保天线开启 */
+	uint8_t txCtrl = readReg(TxControlReg);
+	if (!(txCtrl & 0x03)) {
+		qWarning() << "RC522: Antenna was off, re-enabling";
+		setBitMask(TxControlReg, 0x03);
+		usleep(50000);
+	}
+
 	/* 寻卡 */
 	if (request(PICC_REQIDL, tagType) != MI_OK)
 		return uidStr;
 
-	/* 防冲撞获取UID */
-	if (anticoll(uid) != MI_OK)
-		return uidStr;
+	qDebug() << "RC522: REQA OK, tagType:" << QString::number(tagType[0], 16)
+	         << QString::number(tagType[1], 16);
 
-	/* 格式化UID为字符串（使用snprintf避免链式QString临时对象） */
+	/* 防冲撞获取UID */
+	if (anticoll(uid) != MI_OK) {
+		qDebug() << "RC522: Anticoll failed";
+		return uidStr;
+	}
+
+	/* 格式化UID为字符串 */
 	char hex[9];
 	snprintf(hex, sizeof(hex), "%02X%02X%02X%02X", uid[0], uid[1], uid[2], uid[3]);
 	uidStr = QString::fromLatin1(hex);
 
+	qInfo() << "RC522: Card detected, UID:" << uidStr;
+
 	/* 让卡片休眠 */
 	halt();
+
+	/* 天线关闭再开启（让卡片重新进入可检测状态） */
+	clearBitMask(TxControlReg, 0x03);
+	usleep(200000);  /* 200ms */
+	setBitMask(TxControlReg, 0x03);
+	usleep(50000);   /* 50ms等待天线稳定 */
 
 	return uidStr;
 }

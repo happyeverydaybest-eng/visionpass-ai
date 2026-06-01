@@ -9,14 +9,23 @@
  * - RFID卡片UID（4字节hex字符串，如"AABBCCDD"）
  * - 密码（SHA-256哈希存储）
  *
- * 数据库结构：
+ * 数据库结构（归一化schema，与user_manager工具共享）：
  * =========================
  * 表 users:
  *   id          TEXT PRIMARY KEY  -- 用户唯一ID（如 "user_001"）
  *   name        TEXT NOT NULL     -- 用户姓名
- *   face_feature BLOB             -- 人脸特征（128×4=512字节）
- *   card_uid    TEXT              -- RFID卡片UID
  *   password_hash TEXT            -- 密码SHA-256哈希
+ *   created_at  TEXT              -- 创建时间
+ *
+ * 表 face_features:
+ *   id          INTEGER PRIMARY KEY AUTOINCREMENT
+ *   user_id     TEXT NOT NULL     -- 关联用户ID
+ *   feature     BLOB NOT NULL     -- 人脸特征（128×4=512字节）
+ *   created_at  TEXT              -- 创建时间
+ *
+ * 表 rfid_cards:
+ *   card_id     TEXT PRIMARY KEY  -- RFID卡片UID
+ *   user_id     TEXT NOT NULL     -- 关联用户ID
  *   created_at  TEXT              -- 创建时间
  *
  * 为什么用SQLite而不是文件？

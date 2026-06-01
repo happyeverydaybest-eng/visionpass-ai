@@ -31,9 +31,12 @@
 #include <QImage>
 #include <QRect>
 #include <QElapsedTimer>
+#include <QMap>
 #include <atomic>
 #include "src/face/FaceDetector.h"
 #include "src/face/FaceRecognizer.h"
+
+class UserDatabase;
 
 /*
  * 人脸处理结果
@@ -47,6 +50,9 @@ struct FaceProcessResult {
 	bool matched;           /* 是否匹配成功 */
 };
 
+/* 注册元类型，使 FaceProcessResult 可以通过 Qt::QueuedConnection 跨线程传递 */
+Q_DECLARE_METATYPE(FaceProcessResult)
+
 class FaceProcessThread : public QThread
 {
 	Q_OBJECT
@@ -54,6 +60,7 @@ class FaceProcessThread : public QThread
 public:
 	explicit FaceProcessThread(FaceDetector *detector,
 				   FaceRecognizer *recognizer,
+				   UserDatabase *database = nullptr,
 				   QObject *parent = nullptr);
 	~FaceProcessThread();
 
@@ -102,6 +109,12 @@ private:
 	/* 识别器 */
 	FaceDetector *m_detector;
 	FaceRecognizer *m_recognizer;
+	UserDatabase *m_database;
+
+	/* 数据库特征缓存 */
+	QMap<QString, FaceFeature> m_dbFeatures;
+	QMap<QString, QString> m_dbNames;
+	bool m_dbLoaded;
 
 	/* 线程控制 */
 	std::atomic<bool> m_running;

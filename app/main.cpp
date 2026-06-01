@@ -11,16 +11,51 @@
  * 运行方式（开发板上）：
  *   ./visionpass -platform linuxfb
  *   或设置环境变量：export QT_QPA_PLATFORM=linuxfb
+ *
+ * 退出方式：
+ *   - 点击界面"退出系统"按钮
+ *   - 发送 SIGTERM/SIGINT 信号（如 kill 命令）
  */
 
 #include <QApplication>
+#include <QTimer>
 #include <QDebug>
+#include <signal.h>
 #include "ui/MainWindow.h"
 #include "src/controller/SystemController.h"
+
+/*
+ * 信号安全退出机制：
+ *
+ * 信号处理函数中不能调用Qt函数（非async-signal-safe），
+ * 所以只设置一个volatile sig_atomic_t标志，
+ * 然后用QTimer每200ms检查一次标志，触发quit。
+ */
+static volatile sig_atomic_t g_exitFlag = 0;
+
+static void signalHandler(int signum)
+{
+	Q_UNUSED(signum);
+	g_exitFlag = 1;
+}
 
 int main(int argc, char *argv[])
 {
 	QApplication app(argc, argv);
+
+	/* 注册信号处理（只设置标志，不调用Qt函数） */
+	signal(SIGTERM, signalHandler);
+	signal(SIGINT, signalHandler);
+
+	/* 定时器：每200ms检查信号标志，安全退出 */
+	QTimer exitCheckTimer;
+	QObject::connect(&exitCheckTimer, &QTimer::timeout, [&]() {
+		if (g_exitFlag) {
+			qInfo() << "Received signal, exiting...";
+			app.quit();
+		}
+	});
+	exitCheckTimer.start(200);
 
 	/* 创建系统控制器（后端逻辑+硬件管理） */
 	SystemController controller;
@@ -36,5 +71,8 @@ int main(int argc, char *argv[])
 	mainWindow.show();
 
 	/* 进入Qt事件循环 */
-	return app.exec();
+	int ret = app.exec();
+
+	qInfo() << "VisionPass exited with code" << ret;
+	return ret;
 }

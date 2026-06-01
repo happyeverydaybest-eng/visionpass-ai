@@ -4,7 +4,7 @@
  * 界面布局：
  * =========
  * 左侧：视频显示区（844x590）
- * 右侧：5个开锁按钮栏（180px宽）
+ * 右侧：4个开锁按钮栏（180px宽）
  * 浮层：状态LED、时间、通知消息
  *
  * 设计原则：
@@ -38,7 +38,10 @@ private slots:
 	void onCardUnlockClicked();
 	void onPasswordUnlockClicked();
 	void onVoiceUnlockClicked();
-	void onAdminClicked();
+	void onExitClicked();
+	void onMessageClicked();
+	void onMessageToSend(const QString &text);
+	void onMessageReceived(const QString &text, const QString &sender);
 
 	/* ===== SystemController信号处理 ===== */
 	void onStateChanged(SystemState newState);
@@ -76,7 +79,8 @@ private:
 	QPushButton *m_cardButton;
 	QPushButton *m_passwordButton;
 	QPushButton *m_voiceButton;
-	QPushButton *m_adminButton;
+	QPushButton *m_messageButton;
+	QPushButton *m_exitButton;
 
 	/* 状态LED */
 	QLabel *m_statusIndicator;

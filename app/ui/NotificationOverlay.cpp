@@ -18,8 +18,8 @@ NotificationOverlay::NotificationOverlay(QWidget *parent)
 	layout->addWidget(m_messageLabel);
 	layout->setContentsMargins(20, 10, 20, 10);
 
-	/* 固定尺寸 */
-	setFixedSize(440, 50);
+	/* 宽度固定，高度自适应（不设固定高度） */
+	setFixedWidth(500);
 
 	/* 默认隐藏 */
 	hide();
@@ -62,9 +62,15 @@ void NotificationOverlay::showMessage(const QString &message,
 		"background-color: %1;"
 		"border-radius: 8px;"
 		"color: %2;"
-		"font-size: 18px;"
+		"font-size: 20px;"
 		"font-weight: bold;"
 	).arg(bgColor).arg(textColor));
+
+	/* 根据文字内容自适应高度 */
+	m_messageLabel->setFixedWidth(460);
+	int textHeight = m_messageLabel->sizeHint().height();
+	int h = qMax(60, textHeight + 24);
+	setFixedHeight(h);
 
 	/* 居中定位在父Widget中 */
 	if (parentWidget()) {

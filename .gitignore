@@ -18,6 +18,13 @@ Module.symvers
 rc522_test
 servo_test
 ir_sensor_test
+rc522_card_diag
+rc522_diag
+rc522_scan
+rc522_write_verify
+simple_test
+servo_test_simple
+ir_sensor_test
 
 # --- 编辑器/IDE ---
 *.swp
@@ -26,8 +33,19 @@ ir_sensor_test
 .vscode/
 .idea/
 
-# --- 构建产物（Qt build目录） ---
-build-*
+# --- CMake构建产物 ---
+build/
+build-arm/
+build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!config/*.cmake
+
+# --- Qt构建产物 ---
 *.pro.user
 *.pro.user.*
 moc_*.cpp
@@ -36,11 +54,12 @@ ui_*.h
 qrc_*.cpp
 qrc_*.o
 
-# --- 日志文件 ---
+# --- 日志和临时文件 ---
 *.log
 *.tmp
+*.pid
 
-# --- 部署相关 ---
+# --- 部署产物 ---
 deploy/
 *.tar.gz
 *.tar.bz2
@@ -49,14 +68,17 @@ deploy/
 .DS_Store
 Thumbs.db
 
+# --- Claude AI配置 ---
+.claude/plans/
+
 # ============================================
-# 以下目录是原版参考代码（已有自己的git仓库）
-# 不纳入本项目版本控制
+# 原版参考代码（已有独立git仓库）
 # ============================================
 VisionPass/
 VisionPass-fork/
 
 # ============================================
-# Claude配置（可选，根据需要决定是否跟踪）
+# 网盘大文件（模型文件、系统镜像等）
 # ============================================
-# .claude/settings.local.json  # 本地配置，通常不跟踪
+# 这些文件存放于网盘，不纳入git版本控制
+# 具体清单见 README.md "外部资源" 章节

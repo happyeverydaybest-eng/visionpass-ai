@@ -73,10 +73,10 @@ bool ServoControl::setAngle(int angle)
 	if (angle > 180) angle = 180;
 
 	/*
-	 * ioctl第三个参数是角度值（int指针）
+	 * ioctl第三个参数是角度值（直接传int，不是指针）
 	 * 驱动内部将角度转换为PWM脉宽
 	 */
-	if (::ioctl(m_fd, SERVO_SET_ANGLE, &angle) < 0) {
+	if (::ioctl(m_fd, SERVO_SET_ANGLE, angle) < 0) {
 		qWarning() << "ServoControl: ioctl SERVO_SET_ANGLE failed:" << strerror(errno);
 		emit deviceError("舵机控制失败");
 		return false;

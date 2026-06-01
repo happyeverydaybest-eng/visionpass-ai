@@ -19,8 +19,8 @@ V4L2CaptureThread::V4L2CaptureThread(const QString &devicePath, QObject *parent)
 	: QThread(parent),
 	  m_devicePath(devicePath),
 	  m_fd(-1),
-	  m_width(640),
-	  m_height(480),
+	  m_width(320),
+	  m_height(240),
 	  m_running(false),
 	  m_deviceOpened(false)
 {
@@ -341,14 +341,26 @@ void V4L2CaptureThread::run()
 		 * 528MHz ARM处理人脸检测+识别约230ms，
 		 * 所以3fps足够，太快会导致CPU满载
 		 */
-		msleep(330);
+		msleep(200);
 	}
 
 	/*
 	 * 步骤6：停止视频流
+	 * STREAMOFF后，所有缓冲区回到"出队"状态
+	 * 必须重新QBUF入队，否则下次run()调STREAMON会报"No buffer space available"
 	 */
 	ioctl(m_fd, VIDIOC_STREAMOFF, &type);
 	m_running = false;
+
+	/* 将所有缓冲区重新入队，供下次启动使用 */
+	for (int i = 0; i < VIDEO_BUFFER_COUNT; i++) {
+		struct v4l2_buffer buf;
+		memset(&buf, 0, sizeof(buf));
+		buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+		buf.memory = V4L2_MEMORY_MMAP;
+		buf.index = i;
+		ioctl(m_fd, VIDIOC_QBUF, &buf);
+	}
 
 	qInfo() << "V4L2: Capture stopped";
 }

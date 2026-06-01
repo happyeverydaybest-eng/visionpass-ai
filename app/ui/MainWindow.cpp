@@ -7,11 +7,17 @@
  */
 
 #include "MainWindow.h"
+#include "PasswordDialog.h"
+#include "MessageDialog.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QTime>
 #include <QPixmap>
 #include <QPainter>
+#include <QDebug>
+#include <QApplication>
+#include <QFile>
+#include <QProcess>
 
 /* 按钮尺寸常量 */
 static const int BUTTON_WIDTH = 160;
@@ -103,17 +109,18 @@ void MainWindow::initLayout()
 	buttonLayout->setSpacing(BUTTON_SPACING);
 	buttonLayout->addStretch();  /* 上方弹性空间，按钮居中 */
 
-	/* 5个开锁按钮 */
+	/* 开锁按钮 + 消息按钮 */
 	m_faceButton = new QPushButton("人脸开锁", rightPanel);
 	m_cardButton = new QPushButton("刷卡开锁", rightPanel);
 	m_passwordButton = new QPushButton("密码开锁", rightPanel);
 	m_voiceButton = new QPushButton("语音开锁", rightPanel);
-	m_adminButton = new QPushButton("管理", rightPanel);
+	m_messageButton = new QPushButton("发送消息", rightPanel);
+	m_exitButton = new QPushButton("退出系统", rightPanel);
 
 	/* 按钮固定尺寸 */
 	QList<QPushButton*> buttons = {
 		m_faceButton, m_cardButton, m_passwordButton,
-		m_voiceButton, m_adminButton
+		m_voiceButton, m_messageButton
 	};
 
 	/* 每个按钮的配色和样式 */
@@ -122,7 +129,7 @@ void MainWindow::initLayout()
 		"#f39c12",   /* 刷卡：橙色 */
 		"#27ae60",   /* 密码：绿色 */
 		"#9b59b6",   /* 语音：紫色 */
-		"#1abc9c"    /* 管理：青色 */
+		"#1abc9c"    /* 消息：青色 */
 	};
 
 	for (int i = 0; i < buttons.size(); i++) {
@@ -149,7 +156,25 @@ void MainWindow::initLayout()
 		buttonLayout->addWidget(btn);
 	}
 
-	buttonLayout->addStretch();  /* 下方弹性空间 */
+	/* 退出按钮：红色，与开锁按钮区分 */
+	m_exitButton->setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT);
+	m_exitButton->setStyleSheet(
+		"QPushButton {"
+		"  background-color: #c0392b;"
+		"  color: white;"
+		"  border: none;"
+		"  border-radius: 8px;"
+		"  font-size: 16px;"
+		"  font-weight: bold;"
+		"  padding: 8px;"
+		"}"
+		"QPushButton:hover { background-color: #e74c3c; }"
+		"QPushButton:pressed { background-color: #96281b; }"
+	);
+
+	buttonLayout->addStretch();  /* 开锁按钮与退出按钮之间的弹性空间 */
+	buttonLayout->addWidget(m_exitButton);
+	buttonLayout->addSpacing(5); /* 底部留白 */
 
 	/* 组装主布局 */
 	mainLayout->addWidget(videoContainer, 1);   /* stretch=1,占据剩余空间 */
@@ -170,8 +195,10 @@ void MainWindow::initConnections()
 		this, &MainWindow::onPasswordUnlockClicked);
 	connect(m_voiceButton, &QPushButton::clicked,
 		this, &MainWindow::onVoiceUnlockClicked);
-	connect(m_adminButton, &QPushButton::clicked,
-		this, &MainWindow::onAdminClicked);
+	connect(m_exitButton, &QPushButton::clicked,
+		this, &MainWindow::onExitClicked);
+	connect(m_messageButton, &QPushButton::clicked,
+		this, &MainWindow::onMessageClicked);
 
 	/* ===== SystemController信号 → MainWindow槽 ===== */
 	connect(m_controller, &SystemController::stateChanged,
@@ -190,6 +217,8 @@ void MainWindow::initConnections()
 		this, &MainWindow::onDoorLocked);
 	connect(m_controller, &SystemController::notification,
 		this, &MainWindow::onNotification);
+	connect(m_controller, &SystemController::messageReceived,
+		this, &MainWindow::onMessageReceived);
 }
 
 /* ===== 按钮点击处理 ===== */
@@ -206,8 +235,18 @@ void MainWindow::onCardUnlockClicked()
 
 void MainWindow::onPasswordUnlockClicked()
 {
-	/* 后续：弹出PasswordDialog */
-	m_controller->startPasswordInput();
+	/* 创建并显示密码输入对话框 */
+	PasswordDialog *dialog = new PasswordDialog(this);
+
+	/* 连接信号：用户确认密码后，传递给 SystemController 验证 */
+	connect(dialog, &PasswordDialog::passwordConfirmed,
+		m_controller, &SystemController::submitPassword);
+
+	/* 以模态方式显示对话框（exec会阻塞直到对话框关闭） */
+	dialog->exec();
+
+	/* 对话框关闭后自动删除 */
+	dialog->deleteLater();
 }
 
 void MainWindow::onVoiceUnlockClicked()
@@ -215,45 +254,104 @@ void MainWindow::onVoiceUnlockClicked()
 	m_controller->startVoiceRecognition();
 }
 
-void MainWindow::onAdminClicked()
+void MainWindow::onExitClicked()
 {
-	/* 后续：弹出UserManagementDialog */
+	/*
+	 * 退出系统：
+	 * 先确认对话框防止误触，然后关闭应用程序。
+	 * QApplication::quit() 会退出事件循环，main() 中的 app.exec() 返回。
+	 */
+	qInfo() << "Exit button clicked, shutting down...";
+	QApplication::quit();
 }
 
-/* ===== SystemController信号处理 ===== */
+void MainWindow::onMessageClicked()
+{
+	/* 弹出消息输入对话框 */
+	MessageDialog *dialog = new MessageDialog(this);
+
+	/* 加载历史消息 */
+	QStringList history = m_controller->messageHistory();
+	for (const QString &msg : history) {
+		dialog->appendHistoryMessage(msg);
+	}
+
+	/* 连接信号：用户发送文字消息 */
+	connect(dialog, &MessageDialog::messageToSend,
+		m_controller, &SystemController::sendMessage);
+
+	/* 连接信号：用户发送语音消息 */
+	connect(dialog, &MessageDialog::voiceToSend,
+		m_controller, [dialog, this](const QByteArray &pcmData, int duration) {
+			dialog->appendVoiceWithData(pcmData, duration, true);
+			m_controller->sendVoiceMessage(pcmData, duration);
+		});
+
+	/* 连接信号：收到管理端文字消息 */
+	connect(m_controller, &SystemController::messageReceived,
+		dialog, &MessageDialog::appendReceivedMessage);
+
+	/* 连接信号：收到管理端语音消息 → 在对话框中显示（自动播放在SystemController中） */
+	connect(m_controller, &SystemController::voiceMessageReceived,
+		dialog, [dialog](const QByteArray &pcmData, int duration, const QString &sender) {
+			Q_UNUSED(sender);
+			dialog->appendVoiceWithData(pcmData, duration, false);
+		});
+
+	dialog->exec();
+	dialog->deleteLater();
+}
+
+void MainWindow::onMessageToSend(const QString &text)
+{
+	Q_UNUSED(text);
+	/* 此槽未直接使用，消息通过dialog→controller→client的信号链传递 */
+}
+
+void MainWindow::onMessageReceived(const QString &text, const QString &sender)
+{
+	/* 收到管理端消息时显示通知 */
+	m_notifyOverlay->showMessage(
+		QString("来自[%1]: %2").arg(sender, text),
+		NotificationOverlay::Success, 5000);
+}
+
+/* ===== 状态变化处理 ===== */
 
 void MainWindow::onStateChanged(SystemState newState)
 {
-	/* 根据状态更新按钮启用/禁用 */
-	updateButtonsForState(newState);
-
-	/* 根据状态更新LED颜色 */
+	/* 根据系统状态更新状态指示灯颜色 */
 	switch (newState) {
 	case IDLE:
-		setStatusIndicator("#e74c3c");   /* 红色：锁定 */
+		setStatusIndicator("#e74c3c");    /* 红色：空闲 */
 		break;
 	case FACE_SCANNING:
-		setStatusIndicator("#f1c40f");    /* 黄色：扫描中 */
-		break;
 	case FACE_MATCHED:
+		setStatusIndicator("#f1c40f");    /* 黄色：人脸扫描/匹配中 */
+		break;
+	case RFID_WAITING:
 	case RFID_MATCHED:
+		setStatusIndicator("#f1c40f");    /* 黄色：读卡中 */
+		break;
+	case VOICE_LISTENING:
 	case VOICE_MATCHED:
+		setStatusIndicator("#f1c40f");    /* 黄色：语音监听中 */
+		break;
+	case PASSWORD_INPUT:
+		setStatusIndicator("#f1c40f");    /* 黄色：密码输入中 */
+		break;
 	case UNLOCKED:
-		setStatusIndicator("#27ae60");    /* 绿色：成功/开锁 */
+		setStatusIndicator("#27ae60");    /* 绿色：开锁成功 */
 		break;
 	case FACE_UNKNOWN:
 	case RFID_UNKNOWN:
-		setStatusIndicator("#e74c3c");    /* 红色：拒绝 */
-		break;
-	case RFID_WAITING:
-	case VOICE_LISTENING:
-		setStatusIndicator("#f39c12");     /* 橙色：等待 */
-		break;
-	case PASSWORD_INPUT:
-		setStatusIndicator("#f39c12");     /* 橙色：输入中 */
+		setStatusIndicator("#e74c3c");    /* 红色：验证失败 */
 		break;
 	case ALARM:
-		setStatusIndicator("#9b59b6");     /* 紫色：告警 */
+		setStatusIndicator("#9b59b6");    /* 紫色：告警 */
+		break;
+	default:
+		setStatusIndicator("#95a5a6");    /* 灰色：未知状态 */
 		break;
 	}
 }
@@ -350,7 +448,6 @@ void MainWindow::updateButtonsForState(SystemState state)
 	m_cardButton->setEnabled(true);
 	m_passwordButton->setEnabled(true);
 	m_voiceButton->setEnabled(true);
-	m_adminButton->setEnabled(true);
 
 	switch (state) {
 	case FACE_SCANNING:
@@ -371,7 +468,6 @@ void MainWindow::updateButtonsForState(SystemState state)
 		m_cardButton->setEnabled(false);
 		m_passwordButton->setEnabled(false);
 		m_voiceButton->setEnabled(false);
-		m_adminButton->setEnabled(false);
 		break;
 	case ALARM:
 		/* 告警状态下所有按钮禁用 */
@@ -379,7 +475,6 @@ void MainWindow::updateButtonsForState(SystemState state)
 		m_cardButton->setEnabled(false);
 		m_passwordButton->setEnabled(false);
 		m_voiceButton->setEnabled(false);
-		m_adminButton->setEnabled(false);
 		break;
 	default:
 		break;

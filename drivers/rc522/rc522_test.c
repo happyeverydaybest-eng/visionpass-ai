@@ -157,7 +157,7 @@ static char PcdComMF522(int fd, uint8_t ucCommand, uint8_t *pInData,
 
 	/* 根据命令设置等待的IRQ类型 */
 	if (ucCommand == PCD_AUTHENT) {
-		irq_wait = 0x10;  /* 等待认证完成IRQ */
+		irq_wait = 0x10;  /* 等待认证完成IRQ (RxIRq) */
 	} else if (ucCommand == PCD_TRANSCEIVE) {
 		irq_wait = 0x30;  /* 等待发送完成+接收完成IRQ */
 	}
@@ -201,9 +201,26 @@ static char PcdComMF522(int fd, uint8_t ucCommand, uint8_t *pInData,
 	if (ReadRawRC(fd, ErrorReg) & 0x1D)
 		return MI_ERR;
 
+	/* 关键修复：对于TRANSCEIVE命令，必须确认RxIRq触发（收到了数据） */
+	if (ucCommand == PCD_TRANSCEIVE) {
+		if (!(irq & 0x10))  /* RxIRq未触发 = 没有收到数据 */
+			return MI_NOTAGERR;  /* 卡片未响应 */
+	}
+
 	/* 读取接收数据 */
 	n = ReadRawRC(fd, FIFOLevelReg);
 	last_bits = ReadRawRC(fd, ControlReg) & 0x07;
+
+	/* 调试：打印FIFO状态（前5次调用） */
+	{
+		static int call_count = 0;
+		if (call_count < 10) {
+			printf("[FIFO call %d] level=%d, last_bits=%d, ErrorReg=0x%02X\n",
+			       call_count, n, last_bits, ReadRawRC(fd, ErrorReg));
+			call_count++;
+		}
+	}
+
 	if (last_bits)
 		*pOutLenBit = n * 8 + last_bits;
 	else
@@ -261,6 +278,9 @@ static char PcdAnticoll(int fd, uint8_t *pSnr)
 
 int main(int argc, char *argv[])
 {
+	/* 禁用stdout缓冲，确保输出立即可见 */
+	setvbuf(stdout, NULL, _IONBF, 0);
+
 	int fd;
 	uint8_t version;
 	uint8_t tx_val, rx_val;
@@ -324,9 +344,16 @@ int main(int argc, char *argv[])
 	printf("\n--- Card reading loop (press Ctrl+C to stop) ---\n");
 	while (1) {
 		/* 寻卡：检测区域内未休眠的卡 */
-		if (PcdRequest(fd, PICC_REQIDL, card_type) == MI_OK) {
+		char req_ret = PcdRequest(fd, PICC_REQIDL, card_type);
+		if (loop < 5) {
+			printf("[REQA] ret=%d, type=0x%02X%02X, TxControl=0x%02X\n",
+			       req_ret, card_type[0], card_type[1],
+			       ReadRawRC(fd, TxControlReg));
+		}
+		if (req_ret == MI_OK) {
 			/* 防冲撞：获取4字节UID */
-			if (PcdAnticoll(fd, uid) == MI_OK) {
+			char anticoll_ret = PcdAnticoll(fd, uid);
+			if (anticoll_ret == MI_OK) {
 				loop++;
 				printf("[%d] Card detected! UID: %02X %02X %02X %02X  Type: %02X %02X\n",
 				       loop, uid[0], uid[1], uid[2], uid[3],
@@ -335,6 +362,8 @@ int main(int argc, char *argv[])
 				PcdAntennaOff(fd);
 				usleep(200000);  /* 200ms间隔 */
 				PcdAntennaOn(fd);
+			} else if (loop < 5) {
+				printf("[ANTICOLL] failed, ret=%d\n", anticoll_ret);
 			}
 		}
 		usleep(100000);  /* 100ms轮询间隔 */

@@ -10,12 +10,14 @@
  */
 
 #include "RFIDThread.h"
+#include "src/database/UserDatabase.h"
 #include <QDebug>
 
-RFIDThread::RFIDThread(QObject *parent)
+RFIDThread::RFIDThread(UserDatabase *database, QObject *parent)
 	: QThread(parent),
 	  m_running(false),
-	  m_pollIntervalMs(200)
+	  m_pollIntervalMs(200),
+	  m_database(database)
 {
 }
 
@@ -93,10 +95,26 @@ void RFIDThread::run()
 			}
 
 			if (lastUidCount >= 2) {
-				/* TODO: 从数据库查询UID对应的用户信息 */
-				/* 暂时直接发射未授权信号（等数据库实现后再改） */
-				emit unauthorizedCard(uid);
-				qInfo() << "RFIDThread: Card detected, UID=" << uid;
+				/* 查询数据库，检查卡片是否已授权 */
+				if (m_database) {
+					QString userId = m_database->findUserByCardUid(uid);
+					if (!userId.isEmpty()) {
+						/* 已授权卡片：获取用户姓名 */
+						UserInfo user = m_database->getUserById(userId);
+						QString userName = user.name.isEmpty() ? userId : user.name;
+						emit cardDetected(uid, userName);
+						qInfo() << "RFIDThread: Authorized card detected, UID=" << uid
+						        << ", User=" << userName;
+					} else {
+						/* 未授权卡片 */
+						emit unauthorizedCard(uid);
+						qInfo() << "RFIDThread: Unauthorized card detected, UID=" << uid;
+					}
+				} else {
+					/* 没有数据库，所有卡片视为未授权 */
+					emit unauthorizedCard(uid);
+					qWarning() << "RFIDThread: No database, treating card as unauthorized, UID=" << uid;
+				}
 
 				/* 等待卡片移开（避免重复读取） */
 				while (m_running) {

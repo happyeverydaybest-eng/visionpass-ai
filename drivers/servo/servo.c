@@ -207,13 +207,11 @@ static long servo_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	switch (cmd) {
 	case SERVO_SET_ANGLE:
 		/*
-		 * 从用户空间获取角度值
-		 * copy_from_user：将用户空间的整数拷贝到内核
+		 * 直接从用户空间参数获取角度值
+		 * _IOW('S', 0, int) 声明参数为int，用户传值而非指针
+		 * 例如：ioctl(fd, SERVO_SET_ANGLE, 90) → arg=90
 		 */
-		if (copy_from_user(&angle, (int __user *)arg, sizeof(int))) {
-			pr_err("servo: copy_from_user failed\n");
-			return -EFAULT;
-		}
+		angle = (int)arg;
 
 		/* 角度范围校验 */
 		if (angle < 0 || angle > 180) {

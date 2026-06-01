@@ -118,16 +118,30 @@ set(VOICE_HEADERS
     src/voice/VoiceThread.h
 )
 
+# 网络消息模块
+set(NETWORK_SOURCES
+    src/network/MessageClient.cpp
+)
+set(NETWORK_HEADERS
+    src/network/MessageClient.h
+)
+
 # UI组件
 set(UI_SOURCES
     ui/MainWindow.cpp
     ui/NotificationOverlay.cpp
     ui/PasswordDialog.cpp
+    ui/MessageDialog.cpp
+    ui/TouchKeyboard.cpp
+    ui/VoiceRecordButton.cpp
 )
 set(UI_HEADERS
     ui/MainWindow.h
     ui/NotificationOverlay.h
     ui/PasswordDialog.h
+    ui/MessageDialog.h
+    ui/TouchKeyboard.h
+    ui/VoiceRecordButton.h
 )
 
 # 入口点
@@ -144,6 +158,7 @@ set(ALL_SOURCES
     ${HARDWARE_SOURCES}
     ${DATABASE_SOURCES}
     ${VOICE_SOURCES}
+    ${NETWORK_SOURCES}
     ${UI_SOURCES}
 )
 
@@ -154,6 +169,7 @@ set(ALL_HEADERS
     ${HARDWARE_HEADERS}
     ${DATABASE_HEADERS}
     ${VOICE_HEADERS}
+    ${NETWORK_HEADERS}
     ${UI_HEADERS}
 )
 
@@ -195,6 +211,7 @@ target_link_libraries(visionpass PRIVATE
     ${OpenCV_LIB_DIR}/libopencv_imgcodecs.so
     ${OpenCV_LIB_DIR}/libopencv_objdetect.so
     ${SYSROOT_DIR}/usr/lib/libz.so
+    ${SYSROOT_DIR}/usr/lib/libasound.so
     pthread
     -Wl,--allow-shlib-undefined  # 允许未定义的共享库符号（运行时由开发板提供）
 )
@@ -215,8 +232,12 @@ qt5_wrap_cpp(MOC_FILES
     src/hardware/BeeperControl.h
     src/database/UserDatabase.h
     src/voice/VoiceThread.h
+    src/network/MessageClient.h
     ui/MainWindow.h
     ui/NotificationOverlay.h
     ui/PasswordDialog.h
+    ui/MessageDialog.h
+    ui/TouchKeyboard.h
+    ui/VoiceRecordButton.h
 )
 target_sources(visionpass PRIVATE ${MOC_FILES})

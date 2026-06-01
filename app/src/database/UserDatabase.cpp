@@ -92,7 +92,12 @@ bool UserDatabase::isOpen() const
 }
 
 /*
- * 创建数据库表
+ * 创建数据库表（归一化schema，与user_manager工具共享）
+ *
+ * 3个表：
+ * - users: 用户基本信息（id, name, password_hash, created_at）
+ * - face_features: 人脸特征向量（支持每用户多张照片）
+ * - rfid_cards: RFID卡片（支持每用户多张卡）
  *
  * CREATE TABLE IF NOT EXISTS：如果表已存在则不报错
  * BLOB类型：二进制大对象，用于存储float数组
@@ -100,38 +105,141 @@ bool UserDatabase::isOpen() const
 bool UserDatabase::createTables()
 {
 	QSqlQuery query(m_db);
+
+	/* 用户基本信息表 */
 	bool ok = query.exec(
 		"CREATE TABLE IF NOT EXISTS users ("
 		"  id TEXT PRIMARY KEY,"
 		"  name TEXT NOT NULL,"
-		"  face_feature BLOB,"
-		"  card_uid TEXT,"
 		"  password_hash TEXT,"
 		"  created_at TEXT"
 		")"
 	);
 
 	if (!ok) {
-		qWarning() << "UserDatabase: CREATE TABLE failed:" << query.lastError().text();
-		emit databaseError("创建表失败: " + query.lastError().text());
+		qWarning() << "UserDatabase: CREATE TABLE users failed:" << query.lastError().text();
+		emit databaseError("创建用户表失败: " + query.lastError().text());
+		return false;
+	}
+
+	/* 人脸特征表（支持每用户多条特征，对应多角度注册） */
+	ok = query.exec(
+		"CREATE TABLE IF NOT EXISTS face_features ("
+		"  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+		"  user_id TEXT NOT NULL,"
+		"  feature BLOB NOT NULL,"
+		"  photo BLOB,"
+		"  created_at TEXT,"
+		"  FOREIGN KEY(user_id) REFERENCES users(id)"
+		")"
+	);
+
+	if (!ok) {
+		qWarning() << "UserDatabase: CREATE TABLE face_features failed:" << query.lastError().text();
+		emit databaseError("创建人脸特征表失败: " + query.lastError().text());
+		return false;
+	}
+
+	/* RFID卡表（支持每用户多张卡） */
+	ok = query.exec(
+		"CREATE TABLE IF NOT EXISTS rfid_cards ("
+		"  card_id TEXT PRIMARY KEY,"
+		"  user_id TEXT NOT NULL,"
+		"  created_at TEXT,"
+		"  FOREIGN KEY(user_id) REFERENCES users(id)"
+		")"
+	);
+
+	if (!ok) {
+		qWarning() << "UserDatabase: CREATE TABLE rfid_cards failed:" << query.lastError().text();
+		emit databaseError("创建RFID卡表失败: " + query.lastError().text());
 		return false;
 	}
 
 	/*
 	 * 创建索引以加速查询
-	 * CREATE INDEX IF NOT EXISTS：如果索引已存在则不报错
-	 * card_uid索引：加速RFID卡片查找（避免全表扫描）
+	 * card_id索引：加速RFID卡片查找（避免全表扫描）
 	 * password_hash索引：加速密码验证查询
 	 */
-	ok = query.exec("CREATE INDEX IF NOT EXISTS idx_card_uid ON users(card_uid)");
-	if (!ok) {
-		qWarning() << "UserDatabase: CREATE INDEX idx_card_uid failed:" << query.lastError().text();
+	query.exec("CREATE INDEX IF NOT EXISTS idx_rfid_card_id ON rfid_cards(card_id)");
+	query.exec("CREATE INDEX IF NOT EXISTS idx_password_hash ON users(password_hash)");
+	query.exec("CREATE INDEX IF NOT EXISTS idx_face_user_id ON face_features(user_id)");
+
+	/* ===== 旧schema迁移检测 ===== */
+	/*
+	 * 旧版users表包含 face_feature(BLOB) 和 card_uid(TEXT) 列，
+	 * 新版将其拆分到 face_features 和 rfid_cards 表。
+	 * 检测旧列是否存在，如果存在则迁移数据。
+	 */
+	bool hasOldFaceCol = false;
+	bool hasOldCardCol = false;
+
+	/* PRAGMA table_info 返回表的列信息 */
+	if (query.exec("PRAGMA table_info(users)")) {
+		while (query.next()) {
+			QString colName = query.value("name").toString();
+			if (colName == "face_feature") hasOldFaceCol = true;
+			if (colName == "card_uid") hasOldCardCol = true;
+		}
 	}
 
-	ok = query.exec("CREATE INDEX IF NOT EXISTS idx_password_hash ON users(password_hash)");
-	if (!ok) {
-		qWarning() << "UserDatabase: CREATE INDEX idx_password_hash failed:" << query.lastError().text();
+	if (hasOldFaceCol || hasOldCardCol) {
+		qInfo() << "UserDatabase: Old schema detected, migrating data...";
+
+		/* 迁移旧的人脸特征数据 */
+		if (hasOldFaceCol) {
+			QSqlQuery migrateQuery(m_db);
+			if (migrateQuery.exec(
+				"INSERT INTO face_features (user_id, feature, created_at) "
+				"SELECT id, face_feature, created_at FROM users "
+				"WHERE face_feature IS NOT NULL")) {
+				int count = migrateQuery.numRowsAffected();
+				qInfo() << "UserDatabase: Migrated" << count << "face features";
+			} else {
+				qWarning() << "UserDatabase: Face feature migration failed:"
+					<< migrateQuery.lastError().text();
+			}
+		}
+
+		/* 迁移旧的RFID卡数据 */
+		if (hasOldCardCol) {
+			QSqlQuery migrateQuery(m_db);
+			if (migrateQuery.exec(
+				"INSERT OR IGNORE INTO rfid_cards (card_id, user_id, created_at) "
+				"SELECT card_uid, id, created_at FROM users "
+				"WHERE card_uid IS NOT NULL AND card_uid != ''")) {
+				int count = migrateQuery.numRowsAffected();
+				qInfo() << "UserDatabase: Migrated" << count << "RFID cards";
+			} else {
+				qWarning() << "UserDatabase: RFID card migration failed:"
+					<< migrateQuery.lastError().text();
+			}
+		}
+
+		/* 创建新users表（不含旧列），替换旧表 */
+		m_db.transaction();
+		query.exec("ALTER TABLE users RENAME TO users_old");
+		query.exec(
+			"CREATE TABLE users ("
+			"  id TEXT PRIMARY KEY,"
+			"  name TEXT NOT NULL,"
+			"  password_hash TEXT,"
+			"  created_at TEXT"
+			")");
+		query.exec(
+			"INSERT INTO users (id, name, password_hash, created_at) "
+			"SELECT id, name, password_hash, created_at FROM users_old");
+		query.exec("DROP TABLE users_old");
+		m_db.commit();
+
+		/* 重建索引 */
+		query.exec("CREATE INDEX IF NOT EXISTS idx_password_hash ON users(password_hash)");
+
+		qInfo() << "UserDatabase: Schema migration complete";
 	}
+
+	/* 兼容旧表：添加photo列（如果不存在，静默忽略错误） */
+	query.exec("ALTER TABLE face_features ADD COLUMN photo BLOB");
 
 	return true;
 }
@@ -172,13 +280,11 @@ bool UserDatabase::addUser(const QString &id, const QString &name,
 {
 	QSqlQuery query(m_db);
 	query.prepare(
-		"INSERT INTO users (id, name, face_feature, card_uid, password_hash, created_at) "
-		"VALUES (:id, :name, :face_feature, :card_uid, :password_hash, :created_at)"
+		"INSERT INTO users (id, name, password_hash, created_at) "
+		"VALUES (:id, :name, :password_hash, :created_at)"
 	);
 	query.bindValue(":id", id);
 	query.bindValue(":name", name);
-	query.bindValue(":face_feature", featureToBlob(faceFeature));
-	query.bindValue(":card_uid", cardUid);
 	query.bindValue(":password_hash", passwordHash);
 	query.bindValue(":created_at", QDateTime::currentDateTime().toString(Qt::ISODate));
 
@@ -188,6 +294,16 @@ bool UserDatabase::addUser(const QString &id, const QString &name,
 		return false;
 	}
 
+	/* 如果提供了人脸特征，保存到face_features表 */
+	if (!faceFeature.isEmpty()) {
+		updateFaceFeature(id, faceFeature);
+	}
+
+	/* 如果提供了RFID卡号，保存到rfid_cards表 */
+	if (!cardUid.isEmpty()) {
+		updateCardUid(id, cardUid);
+	}
+
 	qInfo() << "UserDatabase: Added user" << id << name;
 	return true;
 }
@@ -195,6 +311,18 @@ bool UserDatabase::addUser(const QString &id, const QString &name,
 bool UserDatabase::removeUser(const QString &id)
 {
 	QSqlQuery query(m_db);
+
+	/* 级联删除人脸特征 */
+	query.prepare("DELETE FROM face_features WHERE user_id = :id");
+	query.bindValue(":id", id);
+	query.exec();
+
+	/* 级联删除RFID卡 */
+	query.prepare("DELETE FROM rfid_cards WHERE user_id = :id");
+	query.bindValue(":id", id);
+	query.exec();
+
+	/* 删除用户 */
 	query.prepare("DELETE FROM users WHERE id = :id");
 	query.bindValue(":id", id);
 
@@ -212,15 +340,29 @@ UserInfo UserDatabase::getUserById(const QString &id)
 	UserInfo user;
 
 	QSqlQuery query(m_db);
-	query.prepare("SELECT * FROM users WHERE id = :id");
+	query.prepare("SELECT id, name, password_hash FROM users WHERE id = :id");
 	query.bindValue(":id", id);
 
 	if (query.exec() && query.next()) {
 		user.id = query.value("id").toString();
 		user.name = query.value("name").toString();
-		user.faceFeature = blobToFeature(query.value("face_feature").toByteArray());
-		user.cardUid = query.value("card_uid").toString();
 		user.passwordHash = query.value("password_hash").toString();
+
+		/* 从face_features表加载最新的人脸特征 */
+		QSqlQuery featureQuery(m_db);
+		featureQuery.prepare("SELECT feature FROM face_features WHERE user_id = :id ORDER BY id DESC LIMIT 1");
+		featureQuery.bindValue(":id", id);
+		if (featureQuery.exec() && featureQuery.next()) {
+			user.faceFeature = blobToFeature(featureQuery.value("feature").toByteArray());
+		}
+
+		/* 从rfid_cards表加载最新的卡号 */
+		QSqlQuery cardQuery(m_db);
+		cardQuery.prepare("SELECT card_id FROM rfid_cards WHERE user_id = :id LIMIT 1");
+		cardQuery.bindValue(":id", id);
+		if (cardQuery.exec() && cardQuery.next()) {
+			user.cardUid = cardQuery.value("card_id").toString();
+		}
 	}
 
 	return user;
@@ -231,14 +373,29 @@ QVector<UserInfo> UserDatabase::getAllUsers()
 	QVector<UserInfo> users;
 
 	QSqlQuery query(m_db);
-	if (query.exec("SELECT * FROM users ORDER BY created_at")) {
+	if (query.exec("SELECT id, name, password_hash FROM users ORDER BY created_at")) {
 		while (query.next()) {
 			UserInfo user;
 			user.id = query.value("id").toString();
 			user.name = query.value("name").toString();
-			user.faceFeature = blobToFeature(query.value("face_feature").toByteArray());
-			user.cardUid = query.value("card_uid").toString();
 			user.passwordHash = query.value("password_hash").toString();
+
+			/* 加载最新人脸特征 */
+			QSqlQuery featureQuery(m_db);
+			featureQuery.prepare("SELECT feature FROM face_features WHERE user_id = :id ORDER BY id DESC LIMIT 1");
+			featureQuery.bindValue(":id", user.id);
+			if (featureQuery.exec() && featureQuery.next()) {
+				user.faceFeature = blobToFeature(featureQuery.value("feature").toByteArray());
+			}
+
+			/* 加载最新RFID卡号 */
+			QSqlQuery cardQuery(m_db);
+			cardQuery.prepare("SELECT card_id FROM rfid_cards WHERE user_id = :id LIMIT 1");
+			cardQuery.bindValue(":id", user.id);
+			if (cardQuery.exec() && cardQuery.next()) {
+				user.cardUid = cardQuery.value("card_id").toString();
+			}
+
 			users.append(user);
 		}
 	}
@@ -251,9 +408,14 @@ QVector<UserInfo> UserDatabase::getAllUsers()
 bool UserDatabase::updateFaceFeature(const QString &id, const FaceFeature &feature)
 {
 	QSqlQuery query(m_db);
-	query.prepare("UPDATE users SET face_feature = :feature WHERE id = :id");
-	query.bindValue(":feature", featureToBlob(feature));
+	/* 插入新特征到face_features表（支持多条记录） */
+	query.prepare(
+		"INSERT INTO face_features (user_id, feature, created_at) "
+		"VALUES (:id, :feature, :created_at)"
+	);
 	query.bindValue(":id", id);
+	query.bindValue(":feature", featureToBlob(feature));
+	query.bindValue(":created_at", QDateTime::currentDateTime().toString(Qt::ISODate));
 
 	if (!query.exec()) {
 		qWarning() << "UserDatabase: updateFaceFeature failed:" << query.lastError().text();
@@ -267,9 +429,14 @@ bool UserDatabase::updateFaceFeature(const QString &id, const FaceFeature &featu
 bool UserDatabase::updateCardUid(const QString &id, const QString &cardUid)
 {
 	QSqlQuery query(m_db);
-	query.prepare("UPDATE users SET card_uid = :card_uid WHERE id = :id");
-	query.bindValue(":card_uid", cardUid);
-	query.bindValue(":id", id);
+	/* 插入或替换到rfid_cards表 */
+	query.prepare(
+		"INSERT OR REPLACE INTO rfid_cards (card_id, user_id, created_at) "
+		"VALUES (:card_id, :user_id, :created_at)"
+	);
+	query.bindValue(":card_id", cardUid);
+	query.bindValue(":user_id", id);
+	query.bindValue(":created_at", QDateTime::currentDateTime().toString(Qt::ISODate));
 
 	if (!query.exec()) {
 		qWarning() << "UserDatabase: updateCardUid failed:" << query.lastError().text();
@@ -300,11 +467,11 @@ bool UserDatabase::updatePassword(const QString &id, const QString &passwordHash
 QString UserDatabase::findUserByCardUid(const QString &cardUid)
 {
 	QSqlQuery query(m_db);
-	query.prepare("SELECT id FROM users WHERE card_uid = :card_uid");
+	query.prepare("SELECT user_id FROM rfid_cards WHERE card_id = :card_uid");
 	query.bindValue(":card_uid", cardUid);
 
 	if (query.exec() && query.next()) {
-		return query.value("id").toString();
+		return query.value("user_id").toString();
 	}
 
 	return QString();  /* 未找到 */
@@ -337,12 +504,13 @@ QMap<QString, FaceFeature> UserDatabase::getAllFaceFeatures()
 	QMap<QString, FaceFeature> features;
 
 	QSqlQuery query(m_db);
-	if (query.exec("SELECT id, face_feature FROM users WHERE face_feature IS NOT NULL")) {
+	/* 从face_features表加载特征，与users表JOIN获取user_id */
+	if (query.exec("SELECT user_id, feature FROM face_features")) {
 		while (query.next()) {
-			QString id = query.value("id").toString();
-			FaceFeature feature = blobToFeature(query.value("face_feature").toByteArray());
+			QString userId = query.value("user_id").toString();
+			FaceFeature feature = blobToFeature(query.value("feature").toByteArray());
 			if (!feature.isEmpty()) {
-				features[id] = feature;
+				features[userId] = feature;
 			}
 		}
 	}

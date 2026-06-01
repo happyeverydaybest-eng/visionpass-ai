@@ -90,8 +90,16 @@ static void rc522_hw_reset(void)
 /* 软复位：通过CommandReg发送PCD_RESETPHASE(0x0F)命令 */
 static void rc522_soft_reset(struct spi_device *spi)
 {
-	rc522_write_reg(spi, 0x01, 0x0F);  /* CommandReg = PCD_RESETPHASE */
-	msleep(50);                         /* 等待RC522内部复位完成 */
+	int ret;
+	u8 ver;
+
+	ret = rc522_write_reg(spi, 0x01, 0x0F);  /* CommandReg = PCD_RESETPHASE */
+	pr_info("rc522: soft_reset write ret=%d\n", ret);
+	msleep(50);                                /* 等待RC522内部复位完成 */
+
+	/* 读取VersionReg验证SPI通信 */
+	ret = rc522_read_reg(spi, 0x37, &ver);
+	pr_info("rc522: soft_reset VersionReg ret=%d, val=0x%02X\n", ret, ver);
 }
 
 static int rc522_open(struct inode *inode, struct file *filp)
@@ -204,7 +212,7 @@ static int rc522_probe(struct spi_device *spi)
 
 	/* 设置SPI模式：RC522使用Mode 0（CPOL=0, CPHA=0），最高5MHz */
 	spi->mode = SPI_MODE_0;
-	spi->max_speed_hz = 5000000;
+	spi->max_speed_hz = 1000000;   /* 降低到1MHz，提高信号完整性 */
 	ret = spi_setup(spi);
 	if (ret < 0) {
 		dev_err(&spi->dev, "SPI setup failed: %d\n", ret);
@@ -270,6 +278,10 @@ static int rc522_probe(struct spi_device *spi)
 	/* 初始化复位：确保RC522处于工作状态 */
 	rc522_hw_reset();
 	rc522_soft_reset(spi);
+
+	/* 打印SPI模式和速度，用于调试 */
+	dev_info(&spi->dev, "SPI mode=%d, speed=%d Hz, CS=%d\n",
+		 spi->mode, spi->max_speed_hz, spi->chip_select);
 
 	dev_info(&spi->dev, "RC522 driver ready, /dev/rc522 created\n");
 	return 0;

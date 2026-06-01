@@ -75,7 +75,6 @@ void PasswordDialog::initLayout()
 		"  color: #ecf0f1;"
 		"  font-size: 28px;"
 		"  font-weight: bold;"
-		"  letter-spacing: 8px;"
 		"}"
 	);
 	m_displayLabel->setText("请输入密码");

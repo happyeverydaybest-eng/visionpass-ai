@@ -306,7 +306,9 @@ err_gpio:
 
 static int ir_remove(struct platform_device *pdev)
 {
-	/* 释放中断 */
+	/* 先禁用中断，再同步等待正在执行的中断处理完成 */
+	disable_irq(irdev.irq);
+	synchronize_irq(irdev.irq);
 	free_irq(irdev.irq, &irdev);
 
 	/* 销毁字符设备 */

@@ -28,6 +28,7 @@
 #include <QString>
 #include <QVector>
 #include <QRect>
+#include <QStringList>
 #include "SystemState.h"
 #include "src/face/FaceDetector.h"
 #include "src/face/FaceRecognizer.h"
@@ -41,6 +42,7 @@ class ServoControl;
 class BeeperControl;
 class IRSensorMonitor;
 class UserDatabase;
+class MessageClient;
 
 /* 人脸处理结果（定义在FaceProcessThread.h中） */
 struct FaceProcessResult;
@@ -75,20 +77,28 @@ public slots:
 	/* 停止RFID刷卡等待 */
 	void stopCardReading();
 
-	/* 密码验证 */
-	void verifyPassword(const QString &password);
-
 	/* 启动语音监听 */
 	void startVoiceRecognition();
 	/* 停止语音监听 */
 	void stopVoiceRecognition();
 
-	/* 启动密码输入（MainWindow弹出密码对话框） */
-	void startPasswordInput();
+	/* 提交密码进行验证（PasswordDialog发射passwordConfirmed信号后调用） */
+	void submitPassword(const QString &password);
+
+	/* 启动人脸注册（为指定用户采集人脸特征） */
+	void startFaceRegistration(const QString &userId);
 
 	/* ===== 开锁/关锁 ===== */
 	void unlockDoor();
 	void lockDoor();
+
+	/* ===== 消息功能 ===== */
+	/* 发送文字消息给管理程序 */
+	void sendMessage(const QString &text);
+	/* 发送语音消息给管理程序 */
+	void sendVoiceMessage(const QByteArray &pcmData, int duration);
+	/* 获取消息历史记录 */
+	QStringList messageHistory() const;
 
 signals:
 	/* ===== 状态变化信号（发送给MainWindow） ===== */
@@ -119,12 +129,20 @@ signals:
 	/* 通知消息（错误/成功/警告） */
 	void notification(const QString &message, SystemState contextState);
 
+	/* 消息相关 */
+	void messageReceived(const QString &text, const QString &sender);
+	void voiceMessageReceived(const QByteArray &pcmData, int duration, const QString &sender);
+	void messageConnectionChanged(bool connected);
+
 private:
 	/* 状态机核心：切换状态并发射信号 */
 	void setState(SystemState newState);
 
 	/* 停止所有正在进行的扫描（人脸/RFID/语音） */
 	void stopAllActiveScanning();
+
+	/* 加载系统配置（从/opt/visionpass/config/system.json读取系统密码） */
+	bool loadSystemConfig();
 
 	/* 各模块指针 */
 	FaceDetector *m_faceDetector;
@@ -137,6 +155,7 @@ private:
 	BeeperControl *m_beeperControl;       /* 蜂鸣器控制 */
 	IRSensorMonitor *m_irSensorMonitor;   /* IR传感器监控 */
 	UserDatabase *m_userDatabase;         /* 用户数据库 */
+	MessageClient *m_messageClient;       /* 消息客户端（TCP） */
 
 	/* V4L2帧到人脸处理线程的连接句柄（用于安全断开） */
 	QMetaObject::Connection m_frameToFaceConnection;
@@ -152,6 +171,12 @@ private:
 	/* 扫描超时定时器（人脸/刷卡10秒超时） */
 	QTimer *m_scanTimeoutTimer;
 	int m_scanTimeoutMs;    /* 扫描超时时间（毫秒） */
+
+	/* 系统密码哈希（SHA-256，从system.json加载，默认为"123456"的哈希） */
+	QString m_systemPasswordHash;
+
+	/* 消息历史记录（保存所有收发消息） */
+	QStringList m_messageHistory;
 };
 
 #endif // SYSTEMCONTROLLER_H
