@@ -1,10 +1,20 @@
 # VisionPass AI门禁系统 — 基于官方源码的AI Agent开发指南
 
+> ⚠️ **更新说明（2026-06-01）**：本文档中以下内容已变更：
+> - 语音解锁：Sherpa-ONNX → **DTW + MFCC**（GCC 4.9.4 兼容，无外部依赖）
+> - 数据存储：AT24C64 EEPROM → **SQLite + JSON**
+> - 接近传感器：ADS1115 → **板载 AP3216C**
+> - 惯性传感器：MPU6050 → **板载 ICM20608**
+> - 新增：MessageClient 网络通信、PC 端工具（user_manager / message_manager）
+> - 新增：物理按键开锁（GPIO1_IO18 KEY0）
+>
+> 完整的当前方案请参考 [README.md](../README.md)。
+
 > **硬件**：正点原子阿尔法开发板（I.MX6ULL）
 > **内核**：Linux 4.1.15（`alientek_linux_2026_4_26`）
 > **U-Boot**：U-Boot 2016.03（`alientek_uboot_2026_4_26`）
 > **AI推理**：端侧部署（NCNN + MobileFaceNet）
-> **语音解锁**：Sherpa-ONNX 离线关键词识别
+> **语音解锁**：DTW + MFCC 模板匹配（GCC 4.9.4 兼容）
 > **开发模式**：AI Agent主导编码，你负责架构审查和硬件测试
 
 ---

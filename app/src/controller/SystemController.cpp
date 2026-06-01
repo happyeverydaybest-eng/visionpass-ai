@@ -13,6 +13,7 @@
 #include "src/face/FaceProcessThread.h"
 #include "src/hardware/RFIDThread.h"
 #include "src/hardware/IRSensorMonitor.h"
+#include "src/hardware/ButtonMonitor.h"
 #include "src/hardware/ServoControl.h"
 #include "src/hardware/BeeperControl.h"
 #include "src/database/UserDatabase.h"
@@ -41,6 +42,7 @@ SystemController::SystemController(QObject *parent)
 	m_servoControl = nullptr;
 	m_beeperControl = nullptr;
 	m_irSensorMonitor = nullptr;
+	m_buttonMonitor = nullptr;
 	m_userDatabase = nullptr;
 	m_messageClient = nullptr;
 
@@ -91,6 +93,11 @@ SystemController::~SystemController()
 	/* 停止IR传感器监控 */
 	if (m_irSensorMonitor) {
 		m_irSensorMonitor->stop();
+	}
+
+	/* 停止物理按键监控 */
+	if (m_buttonMonitor) {
+		m_buttonMonitor->stop();
 	}
 
 	/* 关闭舵机设备（停止PWM） */
@@ -253,6 +260,25 @@ bool SystemController::initialize()
 		/* IR传感器不可用不是致命错误 */
 	}
 	/* start()内部已打印"IRSensorMonitor: Started" */
+
+	/* ===== 初始化物理按键监控（KEY0, GPIO1_IO18） ===== */
+	m_buttonMonitor = new ButtonMonitor(18, this);
+	connect(m_buttonMonitor, &ButtonMonitor::buttonPressed,
+		this, [this]() {
+			qInfo() << "Button: KEY0 pressed, unlocking door";
+			unlockDoor();
+		}, Qt::QueuedConnection);
+	connect(m_buttonMonitor, &ButtonMonitor::deviceError,
+		this, [this](const QString &error) {
+			emit notification(error, ALARM);
+		}, Qt::QueuedConnection);
+
+	if (!m_buttonMonitor->start()) {
+		qWarning() << "ButtonMonitor: Failed to start";
+		/* 按键不可用不是致命错误 */
+	} else {
+		qInfo() << "ButtonMonitor: Ready (KEY0, GPIO1_IO18)";
+	}
 
 	/* ===== 初始化语音识别线程 ===== */
 	m_voiceThread = new VoiceThread(this);

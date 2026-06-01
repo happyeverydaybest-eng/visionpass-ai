@@ -91,6 +91,7 @@ set(HARDWARE_SOURCES
     src/hardware/RC522User.cpp
     src/hardware/RFIDThread.cpp
     src/hardware/IRSensorMonitor.cpp
+    src/hardware/ButtonMonitor.cpp
     src/hardware/ServoControl.cpp
     src/hardware/BeeperControl.cpp
 )
@@ -98,6 +99,7 @@ set(HARDWARE_HEADERS
     src/hardware/RC522User.h
     src/hardware/RFIDThread.h
     src/hardware/IRSensorMonitor.h
+    src/hardware/ButtonMonitor.h
     src/hardware/ServoControl.h
     src/hardware/BeeperControl.h
 )
@@ -228,6 +230,7 @@ qt5_wrap_cpp(MOC_FILES
     src/capture/V4L2CaptureThread.h
     src/hardware/RFIDThread.h
     src/hardware/IRSensorMonitor.h
+    src/hardware/ButtonMonitor.h
     src/hardware/ServoControl.h
     src/hardware/BeeperControl.h
     src/database/UserDatabase.h

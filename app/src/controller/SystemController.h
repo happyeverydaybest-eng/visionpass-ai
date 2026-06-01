@@ -41,6 +41,7 @@ class VoiceThread;
 class ServoControl;
 class BeeperControl;
 class IRSensorMonitor;
+class ButtonMonitor;
 class UserDatabase;
 class MessageClient;
 
@@ -154,6 +155,7 @@ private:
 	ServoControl *m_servoControl;         /* 舵机控制 */
 	BeeperControl *m_beeperControl;       /* 蜂鸣器控制 */
 	IRSensorMonitor *m_irSensorMonitor;   /* IR传感器监控 */
+	ButtonMonitor *m_buttonMonitor;       /* 物理按键监控 */
 	UserDatabase *m_userDatabase;         /* 用户数据库 */
 	MessageClient *m_messageClient;       /* 消息客户端（TCP） */
 
