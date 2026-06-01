@@ -409,7 +409,7 @@ PC message_manager ←── TCP 9500 ──→ 板载 MessageClient
 | `ncnn-build-arm.tar.xz` | ~50 MB | NCNN ARM 预编译库 |
 | `sdcard-system-image.img` | ~1 GB | 开发板系统镜像（含 rootfs） |
 
-> 📥 **下载地址**：<https://pan.baidu.com/s/xxxxxx>（提取码：xxxx）
+> 📥 **下载地址**：<https://pan.baidu.com/s/1PhoYNQhfvUq1aRRESzWR4w>（提取码：`tzeh`）
 >
 > 请将下载的模型文件放置到 `model/` 目录，工具链解压到 `/usr/local/arm/`。
 
