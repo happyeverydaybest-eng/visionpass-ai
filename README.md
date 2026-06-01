@@ -401,17 +401,18 @@ PC message_manager ←── TCP 9500 ──→ 板载 MessageClient
 
 | 文件 | 大小 | 说明 |
 |:---:|:---:|:---:|
-| `MobileFaceNet.bin` | 4.0 MB | NCNN 人脸识别模型（FP32） |
-| `MobileFaceNet-fp16.bin` | 2.0 MB | NCNN 人脸识别模型（FP16 量化） |
-| `haarcascade_frontalface_alt2.xml` | 1.2 MB | OpenCV Haar 级联分类器 |
-| `gcc-linaro-4.9.4.tar.xz` | ~100 MB | ARM 交叉编译工具链 |
-| `qt-everywhere-5.12.12.tar.xz` | ~250 MB | Qt 5.12 源码包 |
-| `ncnn-build-arm.tar.xz` | ~50 MB | NCNN ARM 预编译库 |
-| `sdcard-system-image.img` | ~1 GB | 开发板系统镜像（含 rootfs） |
+| `gcc-linaro-4.9.4-2017.01-x86_64_arm-linux-gnueabihf.tar.xz` | 78 MB | ARM 交叉编译工具链（Linaro 4.9.4） |
+| `rootfs.tar.bz2` | 224 MB | 开发板 rootfs（含 Qt 5.12.9 运行库） |
+| `ncnn-build-arm-install.tar.xz` | 14 MB | NCNN ARM 预编译库（头文件 + 静态库） |
 
 > 📥 **下载地址**：<https://pan.baidu.com/s/1PhoYNQhfvUq1aRRESzWR4w>（提取码：`tzeh`）
 >
-> 请将下载的模型文件放置到 `model/` 目录，工具链解压到 `/usr/local/arm/`。
+> **使用说明**：
+> - 工具链解压到 `/usr/local/arm/`，并添加到 PATH
+> - rootfs 用于开发板系统恢复或 NFS 挂载参考
+> - NCNN 库解压后用于交叉编译 VisionPass 主程序
+> - AI 模型文件（MobileFaceNet、Haar Cascade）已包含在仓库 `model/` 目录中
+> - Qt 5.12 ARM 交叉编译产物需自行编译，详见 [docs/部署手册.md](docs/部署手册.md)
 
 ---
 
