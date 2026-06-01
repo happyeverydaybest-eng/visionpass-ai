@@ -96,8 +96,9 @@ SystemController::~SystemController()
 	}
 
 	/* 停止物理按键监控 */
-	if (m_buttonMonitor) {
-		m_buttonMonitor->stop();
+	if (m_buttonMonitor && m_buttonMonitor->isRunning()) {
+		m_buttonMonitor->stopPolling();
+		m_buttonMonitor->wait(2000);
 	}
 
 	/* 关闭舵机设备（停止PWM） */
@@ -262,7 +263,8 @@ bool SystemController::initialize()
 	/* start()内部已打印"IRSensorMonitor: Started" */
 
 	/* ===== 初始化物理按键监控（KEY0, GPIO1_IO18） ===== */
-	m_buttonMonitor = new ButtonMonitor(18, this);
+	/* gpio_keys@0 对应 /dev/input/event2（可通过 cat /proc/bus/input/devices 确认） */
+	m_buttonMonitor = new ButtonMonitor("/dev/input/event2", this);
 	connect(m_buttonMonitor, &ButtonMonitor::buttonPressed,
 		this, [this]() {
 			qInfo() << "Button: KEY0 pressed, unlocking door";
@@ -273,12 +275,8 @@ bool SystemController::initialize()
 			emit notification(error, ALARM);
 		}, Qt::QueuedConnection);
 
-	if (!m_buttonMonitor->start()) {
-		qWarning() << "ButtonMonitor: Failed to start";
-		/* 按键不可用不是致命错误 */
-	} else {
-		qInfo() << "ButtonMonitor: Ready (KEY0, GPIO1_IO18)";
-	}
+	m_buttonMonitor->start();
+	qInfo() << "ButtonMonitor: Ready (KEY0, GPIO1_IO18, input event)";
 
 	/* ===== 初始化语音识别线程 ===== */
 	m_voiceThread = new VoiceThread(this);

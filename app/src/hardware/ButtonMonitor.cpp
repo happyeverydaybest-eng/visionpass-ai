@@ -1,195 +1,143 @@
 /**
  * @file ButtonMonitor.cpp
- * @brief 物理按键监控实现 — 读取 GPIO1_IO18（板载 KEY0）状态
+ * @brief 物理按键监控实现 — 通过 Linux input event 子系统读取 KEY0 按钮
+ *
+ * GPIO1_IO18 已被内核 gpio_keys 驱动占用（/sys/kernel/debug/gpio 显示 gpio-18 USER-KEY1），
+ * 不能通过 sysfs 导出。改为使用 /dev/input/eventN 读取 input event。
  *
  * 工作原理：
- * 1. 通过 sysfs 导出 GPIO 并设置为输入方向
- * 2. QTimer 每 50ms 读取一次 GPIO 值
- * 3. 检测到下降沿（高→低，即按键按下）时发射 buttonPressed 信号
- * 4. 内置防抖：状态必须稳定一个周期才确认
- *
- * GPIO 编号计算：GPIO1_IO18 = 32 * 1 + 18 = 50
- * （I.MX6ULL 中 GPIO1 的基址编号为 32*0=0，但 sysfs 编号取决于内核配置）
- * 实际上 GPIO1_IO18 对应 sysfs 编号 18（GPIO1 基址为 0）
+ * 1. 打开 gpio_keys 对应的 /dev/input/eventN（通常是 event2）
+ * 2. 阻塞 read() 等待 input_event 结构体
+ * 3. 收到 EV_KEY 事件且 value=1（按下）时发射 buttonPressed 信号
+ * 4. 无轮询，纯中断驱动，CPU 占用极低
  */
 #include "ButtonMonitor.h"
 
-#include <QTimer>
 #include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QTextStream>
 
 #include <fcntl.h>
 #include <unistd.h>
+#include <linux/input.h>
 #include <string.h>
 #include <errno.h>
 
-/* GPIO 编号：GPIO1_IO18 = 18（GPIO1 基址为 0） */
-static const char *GPIO_EXPORT_PATH = "/sys/class/gpio/export";
-static const char *GPIO_UNEXPORT_PATH = "/sys/class/gpio/unexport";
-
-ButtonMonitor::ButtonMonitor(int gpioNumber, QObject *parent)
-    : QObject(parent)
-    , m_gpioNumber(gpioNumber)
-    , m_fd(-1)
-    , m_lastState(true)    /* 默认高电平（按钮未按下） */
+ButtonMonitor::ButtonMonitor(const QString &eventDevice, QObject *parent)
+    : QThread(parent)
+    , m_eventDevice(eventDevice)
     , m_running(false)
-    , m_pollTimer(new QTimer(this))
 {
-    /* 构建 GPIO value 文件路径 */
-    m_gpioPath = QString("/sys/class/gpio/gpio%1/value").arg(m_gpioNumber);
-
-    /* 连接定时器到轮询槽 */
-    connect(m_pollTimer, &QTimer::timeout, this, &ButtonMonitor::poll);
 }
 
 ButtonMonitor::~ButtonMonitor()
 {
-    stop();
+    stopPolling();
 }
 
-bool ButtonMonitor::start()
+void ButtonMonitor::stopPolling()
 {
-    if (m_running) {
-        return true;
-    }
-
-    /* 尝试导出 GPIO（如果已导出则忽略错误） */
-    exportGpio();
-
-    /* 设置 GPIO 方向为输入 */
-    if (!setDirection()) {
-        emit deviceError(QString("按键 GPIO%1 设置输入方向失败").arg(m_gpioNumber));
-        return false;
-    }
-
-    /* 打开 GPIO value 文件 */
-    m_fd = ::open(m_gpioPath.toLocal8Bit().constData(), O_RDONLY);
-    if (m_fd < 0) {
-        emit deviceError(QString("按键 GPIO%1 打开失败: %2")
-                         .arg(m_gpioNumber).arg(strerror(errno)));
-        return false;
-    }
-
-    /* 读取初始状态 */
-    char buf[4];
-    ssize_t n = ::read(m_fd, buf, sizeof(buf) - 1);
-    if (n > 0) {
-        buf[n] = '\0';
-        m_lastState = (buf[0] == '1');
-    }
-
-    /* 重置文件指针到开头，以便后续读取 */
-    ::lseek(m_fd, 0, SEEK_SET);
-
-    /* 启动定时器，50ms 轮询间隔 */
-    m_pollTimer->start(50);
-    m_running = true;
-
-    qDebug() << "ButtonMonitor: 按键监控已启动, GPIO" << m_gpioNumber
-             << "初始状态:" << (m_lastState ? "高" : "低");
-    return true;
-}
-
-void ButtonMonitor::stop()
-{
-    if (!m_running) {
-        return;
-    }
-
-    m_pollTimer->stop();
     m_running = false;
-
-    if (m_fd >= 0) {
-        ::close(m_fd);
-        m_fd = -1;
-    }
-
-    unexportGpio();
-
-    qDebug() << "ButtonMonitor: 按键监控已停止";
+    /* 等待线程退出（最多 2 秒） */
+    wait(2000);
 }
 
-void ButtonMonitor::poll()
+QString ButtonMonitor::findGpioKeyEventDevice() const
 {
-    if (m_fd < 0) {
-        return;
+    /*
+     * 遍历 /sys/class/input/ 查找 gpio_keys 设备对应的 eventN
+     * 匹配条件：设备名称包含 "gpio_keys" 或 "gpio-keys"
+     */
+    QDir inputDir("/sys/class/input");
+    for (const QString &entry : inputDir.entryList(QStringList() << "input*", QDir::Dirs)) {
+        QString namePath = QString("/sys/class/input/%1/device/name").arg(entry);
+        QFile nameFile(namePath);
+        if (nameFile.open(QIODevice::ReadOnly)) {
+            QString name = QString::fromLocal8Bit(nameFile.readAll().trimmed());
+            if (name.contains("gpio_keys") || name.contains("gpio-keys")) {
+                /* 找到 gpio_keys 设备，读取对应的 eventN */
+                QString eventPath = QString("/sys/class/input/%1/event").arg(entry);
+                QDir eventDir(eventPath);
+                QStringList events = eventDir.entryList(QStringList() << "event*", QDir::Dirs);
+                if (!events.isEmpty()) {
+                    QString device = "/dev/input/" + events.first();
+                    qDebug() << "ButtonMonitor: 找到 gpio_keys 设备:" << device
+                             << "(名称:" << name << ")";
+                    return device;
+                }
+            }
+        }
     }
-
-    /* 重置文件指针到开头 */
-    ::lseek(m_fd, 0, SEEK_SET);
-
-    char buf[4];
-    ssize_t n = ::read(m_fd, buf, sizeof(buf) - 1);
-    if (n <= 0) {
-        return;
-    }
-    buf[n] = '\0';
-
-    bool currentState = (buf[0] == '1');
-
-    /* 检测下降沿：高→低 表示按键按下 */
-    if (m_lastState && !currentState) {
-        qDebug() << "ButtonMonitor: 检测到按键按下";
-        emit buttonPressed();
-    }
-
-    m_lastState = currentState;
+    return QString();
 }
 
-bool ButtonMonitor::exportGpio()
+void ButtonMonitor::run()
 {
-    /* 检查 GPIO 是否已经导出 */
-    if (access(m_gpioPath.toLocal8Bit().constData(), F_OK) == 0) {
-        return true;  /* 已导出 */
+    /* 如果未指定设备，自动查找 */
+    if (m_eventDevice.isEmpty() || m_eventDevice == "auto") {
+        QString found = findGpioKeyEventDevice();
+        if (found.isEmpty()) {
+            emit deviceError("未找到 gpio_keys 按键设备，请检查设备树配置");
+            return;
+        }
+        m_eventDevice = found;
     }
 
-    int fd = ::open(GPIO_EXPORT_PATH, O_WRONLY);
+    /* 打开 input event 设备 */
+    int fd = ::open(m_eventDevice.toLocal8Bit().constData(), O_RDONLY);
     if (fd < 0) {
-        qWarning() << "ButtonMonitor: 打开 export 文件失败:" << strerror(errno);
-        return false;
+        emit deviceError(QString("打开按键设备 %1 失败: %2")
+                         .arg(m_eventDevice, strerror(errno)));
+        return;
     }
 
-    QByteArray gpioStr = QByteArray::number(m_gpioNumber);
-    ssize_t written = ::write(fd, gpioStr.constData(), gpioStr.size());
-    ::close(fd);
+    m_running = true;
+    qDebug() << "ButtonMonitor: 开始监控" << m_eventDevice;
 
-    if (written < 0) {
-        /* EBUSY 表示已经导出，不算错误 */
-        if (errno != EBUSY) {
-            qWarning() << "ButtonMonitor: 导出 GPIO" << m_gpioNumber << "失败:" << strerror(errno);
-            return false;
+    /* 获取设备名称用于调试 */
+    char devName[256] = "Unknown";
+    if (ioctl(fd, EVIOCGNAME(sizeof(devName)), devName) >= 0) {
+        qDebug() << "ButtonMonitor: 设备名称 =" << devName;
+    }
+
+    /* 主循环：阻塞读取 input event */
+    struct input_event ev;
+    while (m_running) {
+        /*
+         * read() 会阻塞直到有事件到达，非常节省 CPU
+         * input_event 结构体：16 字节时间戳 + 2 字节 type + 2 字节 code + 4 字节 value
+         */
+        ssize_t n = ::read(fd, &ev, sizeof(ev));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;  /* 被信号中断，继续 */
+            }
+            if (m_running) {
+                emit deviceError(QString("读取按键设备失败: %1").arg(strerror(errno)));
+            }
+            break;
+        }
+
+        if (n != sizeof(ev)) {
+            continue;  /* 读取不完整，跳过 */
+        }
+
+        /* 只关心 EV_KEY 事件（按键事件） */
+        if (ev.type == EV_KEY) {
+            /*
+             * value 含义：
+             *   0 = 按键释放
+             *   1 = 按键按下
+             *   2 = 按键重复（长按）
+             */
+            if (ev.value == 1) {
+                qDebug() << "ButtonMonitor: 按键按下, code =" << ev.code;
+                emit buttonPressed();
+            }
         }
     }
 
-    /* 等待 sysfs 节点创建 */
-    usleep(100000);  /* 100ms */
-
-    return true;
-}
-
-void ButtonMonitor::unexportGpio()
-{
-    int fd = ::open(GPIO_UNEXPORT_PATH, O_WRONLY);
-    if (fd < 0) {
-        return;
-    }
-
-    QByteArray gpioStr = QByteArray::number(m_gpioNumber);
-    ::write(fd, gpioStr.constData(), gpioStr.size());
     ::close(fd);
-}
-
-bool ButtonMonitor::setDirection()
-{
-    QString directionPath = QString("/sys/class/gpio/gpio%1/direction").arg(m_gpioNumber);
-    int fd = ::open(directionPath.toLocal8Bit().constData(), O_WRONLY);
-    if (fd < 0) {
-        qWarning() << "ButtonMonitor: 打开 direction 文件失败:" << strerror(errno);
-        return false;
-    }
-
-    const char *dir = "in";
-    ssize_t written = ::write(fd, dir, strlen(dir));
-    ::close(fd);
-
-    return written > 0;
+    qDebug() << "ButtonMonitor: 监控已停止";
 }
